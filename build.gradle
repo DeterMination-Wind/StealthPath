@@ -1,0 +1,21 @@
+plugins{
+    id "java"
+}
+
+group = "stealthpath"
+version = "0.2.0"
+
+dependencies{
+    // Build against this Mindustry source checkout.
+    compileOnly project(":core")
+}
+
+tasks.withType(JavaCompile).configureEach{
+    options.encoding = "UTF-8"
+}
+
+jar{
+    // A Mindustry Java mod is a zip/jar archive with classes + resources.
+    // Use .zip extension for distribution.
+    archiveFileName = "${project.name}.zip"
+}
