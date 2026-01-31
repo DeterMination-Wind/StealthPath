@@ -21,6 +21,7 @@ import arc.struct.Seq;
 import arc.util.Strings;
 import arc.util.Time;
 import mindustry.game.EventType.*;
+import mindustry.game.Team;
 import mindustry.gen.Groups;
 import mindustry.gen.Icon;
 import mindustry.gen.Tex;
@@ -95,6 +96,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private final Color mousePathColor = new Color(0.635f, 0.486f, 0.898f, 1f);
     private float lastDamage = 0f;
     private boolean lastIncludeUnits = false;
+    private final Seq<Building> tmpBuildings = new Seq<>();
 
     private int lastCycleBaseMode = targetModeCore;
 
@@ -578,52 +580,96 @@ public class StealthPathMod extends mindustry.mod.Mod{
         if(showToasts) showToast(Core.bundle.format("sp.toast.path", result.path.size, Strings.autoFixed(lastDamage, 1)), 3f);
     }
 
+    private Seq<Building> anchorBuildings(){
+        tmpBuildings.clear();
+        if(world == null) return tmpBuildings;
+
+        for(int y = 0; y < world.height(); y++){
+            for(int x = 0; x < world.width(); x++){
+                Tile tile = world.tile(x, y);
+                if(tile == null) continue;
+                Building b = tile.build;
+                if(b == null) continue;
+                if(b.tileX() != x || b.tileY() != y) continue;
+                tmpBuildings.add(b);
+            }
+        }
+
+        return tmpBuildings;
+    }
+
     private Building findTarget(int mode){
         Block wanted = selectedTargetBlock();
+        if(mode == targetModeBlock && wanted == null){
+            // If no block is selected (or the saved block name is invalid), fall back to nearest enemy building.
+            mode = targetModeNearest;
+        }
 
         float px = player.unit().x;
         float py = player.unit().y;
 
+        Seq<Building> builds = anchorBuildings();
+
         Building best = null;
         float bestDst2 = Float.POSITIVE_INFINITY;
+        Building bestDerelict = null;
+        float bestDerelictDst2 = Float.POSITIVE_INFINITY;
 
-        for(int i = 0; i < Groups.build.size(); i++){
-            Building b = Groups.build.index(i);
+        for(int i = 0; i < builds.size; i++){
+            Building b = builds.get(i);
             if(b == null) continue;
             if(b.team == player.team()) continue;
-            if(b.team.id == 0) continue;
+
+            boolean isDerelict = b.team == Team.derelict;
 
             if(mode == targetModeCore){
                 if(!(b.block instanceof CoreBlock)) continue;
             }else if(mode == targetModeBlock){
-                if(wanted == null) return null;
                 if(b.block != wanted) continue;
             }
 
             float dst2 = Mathf.dst2(px, py, b.x, b.y);
-            if(dst2 < bestDst2){
-                bestDst2 = dst2;
-                best = b;
+            if(isDerelict){
+                if(dst2 < bestDerelictDst2){
+                    bestDerelictDst2 = dst2;
+                    bestDerelict = b;
+                }
+            }else{
+                if(dst2 < bestDst2){
+                    bestDst2 = dst2;
+                    best = b;
+                }
             }
         }
 
-        if(best != null || mode == targetModeNearest) return best;
+        if(best != null) return best;
+        if(mode == targetModeNearest) return bestDerelict;
 
         // fallback: any enemy building
-        for(int i = 0; i < Groups.build.size(); i++){
-            Building b = Groups.build.index(i);
+        bestDerelict = null;
+        bestDerelictDst2 = Float.POSITIVE_INFINITY;
+        for(int i = 0; i < builds.size; i++){
+            Building b = builds.get(i);
             if(b == null) continue;
             if(b.team == player.team()) continue;
-            if(b.team.id == 0) continue;
+
+            boolean isDerelict = b.team == Team.derelict;
 
             float dst2 = Mathf.dst2(px, py, b.x, b.y);
-            if(dst2 < bestDst2){
-                bestDst2 = dst2;
-                best = b;
+            if(isDerelict){
+                if(dst2 < bestDerelictDst2){
+                    bestDerelictDst2 = dst2;
+                    bestDerelict = b;
+                }
+            }else{
+                if(dst2 < bestDst2){
+                    bestDst2 = dst2;
+                    best = b;
+                }
             }
         }
 
-        return best;
+        return best != null ? best : bestDerelict;
     }
 
     private void computeGenClusterPaths(Unit unit, ThreatMap map, boolean includeUnits, boolean moveFlying, boolean threatsAir, boolean threatsGround, boolean showToasts){
@@ -817,18 +863,27 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
     private Seq<Seq<Building>> findEnemyGeneratorClusters(int minSize){
         Seq<Building> gens = new Seq<>();
+        Seq<Building> derelictGens = new Seq<>();
 
-        for(int i = 0; i < Groups.build.size(); i++){
-            Building b = Groups.build.index(i);
+        Seq<Building> builds = anchorBuildings();
+        for(int i = 0; i < builds.size; i++){
+            Building b = builds.get(i);
             if(b == null) continue;
             if(b.team == player.team()) continue;
-            if(b.team.id == 0) continue;
             if(!(b.block instanceof PowerGenerator)) continue;
             if(isExcludedGenerator(b.block)) continue;
-            gens.add(b);
+
+            if(b.team == Team.derelict){
+                derelictGens.add(b);
+            }else{
+                gens.add(b);
+            }
         }
 
         Seq<Seq<Building>> clusters = new Seq<>();
+        if(gens.isEmpty()){
+            gens = derelictGens;
+        }
         if(gens.isEmpty()) return clusters;
 
         boolean[] visited = new boolean[gens.size];
@@ -907,12 +962,13 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
     private Seq<Building> collectEnemyTurretBuildings(Unit playerUnit, boolean threatsAir, boolean threatsGround){
         Seq<Building> out = new Seq<>();
+        Seq<Building> derelictOut = new Seq<>();
 
-        for(int i = 0; i < Groups.build.size(); i++){
-            Building b = Groups.build.index(i);
+        Seq<Building> builds = anchorBuildings();
+        for(int i = 0; i < builds.size; i++){
+            Building b = builds.get(i);
             if(b == null) continue;
             if(b.team == player.team()) continue;
-            if(b.team.id == 0) continue;
             if(!(b.block instanceof Turret)) continue;
             if(!(b instanceof Turret.TurretBuild)) continue;
 
@@ -924,10 +980,14 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
             if(tb.estimateDps() <= 0.0001f) continue;
 
-            out.add(b);
+            if(b.team == Team.derelict){
+                derelictOut.add(b);
+            }else{
+                out.add(b);
+            }
         }
 
-        return out;
+        return out.isEmpty() ? derelictOut : out;
     }
 
     private static int findPathStartIndexNearTurrets(IntSeq path, int width, Seq<Building> turrets){
@@ -1148,12 +1208,13 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
     private Seq<Threat> collectThreats(Unit playerUnit, boolean includeUnits, boolean threatsAir, boolean threatsGround){
         Seq<Threat> out = new Seq<>();
+        Seq<Threat> derelictOut = new Seq<>();
 
-        for(int i = 0; i < Groups.build.size(); i++){
-            Building b = Groups.build.index(i);
+        Seq<Building> builds = anchorBuildings();
+        for(int i = 0; i < builds.size; i++){
+            Building b = builds.get(i);
             if(b == null) continue;
             if(b.team == player.team()) continue;
-            if(b.team.id == 0) continue;
             if(!(b.block instanceof Turret)) continue;
             if(!(b instanceof Turret.TurretBuild)) continue;
 
@@ -1166,7 +1227,12 @@ public class StealthPathMod extends mindustry.mod.Mod{
             float dps = tb.estimateDps();
             if(dps <= 0.0001f) continue;
 
-            out.add(new Threat(b.x, b.y, tb.range(), tb.minRange(), dps));
+            Threat t = new Threat(b.x, b.y, tb.range(), tb.minRange(), dps);
+            if(b.team == Team.derelict){
+                derelictOut.add(t);
+            }else{
+                out.add(t);
+            }
         }
 
         if(includeUnits){
@@ -1183,8 +1249,17 @@ public class StealthPathMod extends mindustry.mod.Mod{
                 float dps = u.type.estimateDps();
                 if(dps <= 0.0001f) continue;
 
-                out.add(new Threat(u.x, u.y, range, 0f, dps));
+                Threat t = new Threat(u.x, u.y, range, 0f, dps);
+                if(u.team == Team.derelict){
+                    derelictOut.add(t);
+                }else{
+                    out.add(t);
+                }
             }
+        }
+
+        if(out.isEmpty()){
+            out.addAll(derelictOut);
         }
 
         return out;
