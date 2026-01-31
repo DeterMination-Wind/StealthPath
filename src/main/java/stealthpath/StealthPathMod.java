@@ -140,6 +140,14 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
     private float autoNextNoUnitsToast = 0f;
 
+    // Cached passability (expensive to recompute every frame).
+    private int passableCacheKey = Integer.MIN_VALUE;
+    private int passableCacheWidth = -1;
+    private int passableCacheHeight = -1;
+    private boolean[] passableCache;
+    private int passableCacheRevision = 0;
+    private int passableCacheUsedRevision = -1;
+
     private static final Pattern coordPattern = Pattern.compile("\\((-?\\d+)\\s*,\\s*(-?\\d+)\\)");
 
     public StealthPathMod(){
@@ -163,7 +171,15 @@ public class StealthPathMod extends mindustry.mod.Mod{
             attackTargetPacked = -1;
             attackTargetX = -1;
             attackTargetY = -1;
+            invalidatePassableCache();
         });
+
+        Events.on(BlockBuildEndEvent.class, e -> invalidatePassableCache());
+        Events.on(BlockDestroyEvent.class, e -> invalidatePassableCache());
+    }
+
+    private void invalidatePassableCache(){
+        passableCacheRevision++;
     }
 
     private void ensureDefaults(){
@@ -459,7 +475,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
         if(autoMode == autoModeOff) return;
         if(!state.isGame() || world == null || player == null) return;
 
-        float interval = Math.max(1f, Core.settings.getInt(keyPreviewRefresh, 6));
+        float baseInterval = Math.max(1f, Core.settings.getInt(keyPreviewRefresh, 6));
         if(Time.time < autoNextCompute) return;
 
         ControlledCluster cluster = computeControlledCluster();
@@ -468,7 +484,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
                 showToast("@sp.toast.auto.no-units", 2.5f);
                 autoNextNoUnitsToast = Time.time + 90f;
             }
-            autoNextCompute = Time.time + interval;
+            autoNextCompute = Time.time + baseInterval * 2f;
             return;
         }
 
@@ -478,7 +494,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
             goalY = clamp(worldToTile(Core.input.mouseWorldY()), 0, world.height() - 1);
         }else{
             if(bufferedTargetPacked == -1){
-                autoNextCompute = Time.time + interval;
+                autoNextCompute = Time.time + baseInterval * 2f;
                 return;
             }
             goalX = bufferedTargetX;
@@ -490,11 +506,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
         int startPacked = startX + startY * world.width();
 
         int goalPacked = goalX + goalY * world.width();
-        if(startPacked != autoLastStartPacked || goalPacked != autoLastGoalPacked || cluster.threatMode != autoLastThreatMode){
-            autoNextCompute = 0f;
-        }
-
-        if(Time.time < autoNextCompute) return;
+        boolean unchanged = startPacked == autoLastStartPacked && goalPacked == autoLastGoalPacked && cluster.threatMode == autoLastThreatMode;
 
         ThreatMap map = buildThreatMap(cluster.moveUnit, true, cluster.moveFlying, cluster.threatsAir, cluster.threatsGround);
         computeClusterToGoal(cluster, map, goalX, goalY, false);
@@ -503,7 +515,10 @@ public class StealthPathMod extends mindustry.mod.Mod{
         autoLastStartPacked = startPacked;
         autoLastGoalPacked = goalPacked;
         autoLastThreatMode = cluster.threatMode;
-        autoNextCompute = Time.time + interval;
+
+        // If the goal/start didn't move, slow down updates to reduce CPU usage.
+        float slowInterval = Math.min(240f, baseInterval * 8f);
+        autoNextCompute = Time.time + (unchanged ? slowInterval : baseInterval);
     }
 
     private ControlledCluster computeControlledCluster(){
@@ -1454,12 +1469,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private ThreatMap buildThreatMap(Unit unit, boolean includeUnits, boolean moveFlying, boolean threatsAir, boolean threatsGround){
         ThreatMap map = new ThreatMap(world.width(), world.height());
 
-        for(int y = 0; y < map.height; y++){
-            for(int x = 0; x < map.width; x++){
-                int idx = x + y * map.width;
-                map.passable[idx] = passableFor(unit, world.tile(x, y), moveFlying);
-            }
-        }
+        fillPassable(map, unit, moveFlying);
 
         Seq<Threat> threats = collectThreats(unit, includeUnits, threatsAir, threatsGround);
         if(threats.isEmpty()){
@@ -1495,6 +1505,54 @@ public class StealthPathMod extends mindustry.mod.Mod{
         }
 
         return map;
+    }
+
+    private void fillPassable(ThreatMap map, Unit unit, boolean treatFlying){
+        if(map == null) return;
+        if(treatFlying){
+            Arrays.fill(map.passable, true);
+            return;
+        }
+
+        if(world == null || unit == null || unit.type == null){
+            Arrays.fill(map.passable, false);
+            return;
+        }
+
+        int key = unit.type.id;
+        key = key * 31 + (unit.type.allowLegStep ? 1 : 0);
+        key = key * 31 + (unit.type.naval ? 1 : 0);
+        key = key * 31 + map.width;
+        key = key * 31 + map.height;
+
+        boolean canUseCache = passableCache != null
+            && passableCacheKey == key
+            && passableCacheWidth == map.width
+            && passableCacheHeight == map.height
+            && passableCacheUsedRevision == passableCacheRevision;
+
+        if(canUseCache){
+            System.arraycopy(passableCache, 0, map.passable, 0, map.size);
+            return;
+        }
+
+        if(passableCache == null || passableCache.length != map.size){
+            passableCache = new boolean[map.size];
+        }
+
+        for(int y = 0; y < map.height; y++){
+            for(int x = 0; x < map.width; x++){
+                int idx = x + y * map.width;
+                boolean p = passableFor(unit, world.tile(x, y), false);
+                map.passable[idx] = p;
+                passableCache[idx] = p;
+            }
+        }
+
+        passableCacheKey = key;
+        passableCacheWidth = map.width;
+        passableCacheHeight = map.height;
+        passableCacheUsedRevision = passableCacheRevision;
     }
 
     private static boolean passableFor(Unit unit, Tile tile, boolean treatFlying){
