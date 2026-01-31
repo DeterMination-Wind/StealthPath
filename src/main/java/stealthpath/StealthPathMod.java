@@ -43,6 +43,7 @@ import java.util.Locale;
 import java.util.PriorityQueue;
 
 import static mindustry.Vars.content;
+import static mindustry.Vars.control;
 import static mindustry.Vars.mobile;
 import static mindustry.Vars.player;
 import static mindustry.Vars.renderer;
@@ -89,6 +90,8 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private static KeyBind keybindModifier;
     private static KeyBind keybindCycleMode;
     private static KeyBind keybindThreatMode;
+    private static KeyBind keybindAutoMouse;
+    private static KeyBind keybindAutoAttack;
 
     private final Seq<RenderPath> drawPaths = new Seq<>();
     private float drawUntil = 0f;
@@ -97,6 +100,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private float lastDamage = 0f;
     private boolean lastIncludeUnits = false;
     private final Seq<Building> tmpBuildings = new Seq<>();
+    private final Seq<Unit> tmpUnits = new Seq<>();
 
     private int lastCycleBaseMode = targetModeCore;
 
@@ -108,6 +112,20 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private boolean liveLastIncludeUnits = false;
     private float liveNextCompute = 0f;
 
+    private static final int autoModeOff = 0;
+    private static final int autoModeMouse = 1;
+    private static final int autoModeAttack = 2;
+
+    private int autoMode = autoModeOff;
+    private int autoLastStartPacked = Integer.MIN_VALUE;
+    private int autoLastGoalPacked = Integer.MIN_VALUE;
+    private int autoLastThreatMode = Integer.MIN_VALUE;
+    private float autoNextCompute = 0f;
+
+    private int attackTargetX = -1;
+    private int attackTargetY = -1;
+    private int attackTargetPacked = -1;
+
     public StealthPathMod(){
         Events.on(ClientLoadEvent.class, e -> {
             ensureDefaults();
@@ -118,6 +136,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
             registerTriggers();
         });
 
+        Events.on(ClientChatEvent.class, e -> onClientChat(e.message));
         Events.on(WorldLoadEvent.class, e -> clearPaths());
     }
 
@@ -145,6 +164,8 @@ public class StealthPathMod extends mindustry.mod.Mod{
         keybindModifier = KeyBind.add("sp_modifier", KeyCode.unset, "stealthpath");
         keybindCycleMode = KeyBind.add("sp_mode_cycle", KeyCode.k, "stealthpath");
         keybindThreatMode = KeyBind.add("sp_threat_cycle", KeyCode.l, "stealthpath");
+        keybindAutoMouse = KeyBind.add("sp_auto_mouse", KeyCode.n, "stealthpath");
+        keybindAutoAttack = KeyBind.add("sp_auto_attack", KeyCode.m, "stealthpath");
     }
 
     private void registerSettings(){
@@ -315,7 +336,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
             clearPaths();
         }
 
-        if(keybindTurrets == null || keybindAll == null || keybindModifier == null || keybindCycleMode == null || keybindThreatMode == null){
+        if(keybindTurrets == null || keybindAll == null || keybindModifier == null || keybindCycleMode == null || keybindThreatMode == null || keybindAutoMouse == null || keybindAutoAttack == null){
             registerKeybinds();
         }
 
@@ -328,6 +349,8 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
         boolean cycleTap = modifierDown && keybindCycleMode != null && Core.input.keyTap(keybindCycleMode);
         boolean threatTap = modifierDown && keybindThreatMode != null && Core.input.keyTap(keybindThreatMode);
+        boolean autoMouseTap = modifierDown && keybindAutoMouse != null && Core.input.keyTap(keybindAutoMouse);
+        boolean autoAttackTap = modifierDown && keybindAutoAttack != null && Core.input.keyTap(keybindAutoAttack);
 
         boolean turretsTap = modifierDown && keybindTurrets != null && Core.input.keyTap(keybindTurrets);
         boolean allTap = modifierDown && keybindAll != null && Core.input.keyTap(keybindAll);
@@ -343,6 +366,12 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
         if(threatTap){
             cycleThreatMode();
+        }
+
+        if(autoMouseTap){
+            toggleAutoMode(autoModeMouse);
+        }else if(autoAttackTap){
+            toggleAutoMode(autoModeAttack);
         }
 
         if(previewDown){
@@ -363,6 +392,155 @@ public class StealthPathMod extends mindustry.mod.Mod{
             lastIncludeUnits = true;
             computePath(true, true);
         }
+
+        autoUpdate();
+    }
+
+    private void toggleAutoMode(int requested){
+        if(autoMode == requested){
+            autoMode = autoModeOff;
+            autoNextCompute = 0f;
+            drawUntil = 0f;
+            clearPaths();
+            showToast(requested == autoModeMouse ? "@sp.toast.auto.mouse.off" : "@sp.toast.auto.attack.off", 2.5f);
+        }else{
+            autoMode = requested;
+            autoNextCompute = 0f;
+            autoLastStartPacked = Integer.MIN_VALUE;
+            autoLastGoalPacked = Integer.MIN_VALUE;
+            autoLastThreatMode = Integer.MIN_VALUE;
+            drawUntil = Float.POSITIVE_INFINITY;
+
+            if(autoMode == autoModeAttack && attackTargetPacked == -1){
+                showToast("@sp.toast.auto.attack.wait", 3f);
+            }else{
+                showToast(autoMode == autoModeMouse ? "@sp.toast.auto.mouse.on" : "@sp.toast.auto.attack.on", 2.5f);
+            }
+        }
+    }
+
+    private void autoUpdate(){
+        if(autoMode == autoModeOff) return;
+        if(!state.isGame() || world == null || player == null) return;
+
+        float interval = Math.max(1f, Core.settings.getInt(keyPreviewRefresh, 6));
+        if(Time.time < autoNextCompute) return;
+
+        ControlledCluster cluster = computeControlledCluster();
+        if(cluster == null){
+            autoNextCompute = Time.time + interval;
+            return;
+        }
+
+        int goalX, goalY;
+        if(autoMode == autoModeMouse){
+            goalX = clamp(worldToTile(Core.input.mouseWorldX()), 0, world.width() - 1);
+            goalY = clamp(worldToTile(Core.input.mouseWorldY()), 0, world.height() - 1);
+        }else{
+            if(attackTargetPacked == -1){
+                autoNextCompute = Time.time + interval;
+                return;
+            }
+            goalX = attackTargetX;
+            goalY = attackTargetY;
+        }
+
+        int startX = worldToTile(cluster.x);
+        int startY = worldToTile(cluster.y);
+        int startPacked = startX + startY * world.width();
+
+        int goalPacked = goalX + goalY * world.width();
+        if(startPacked != autoLastStartPacked || goalPacked != autoLastGoalPacked || cluster.threatMode != autoLastThreatMode){
+            autoNextCompute = 0f;
+        }
+
+        if(Time.time < autoNextCompute) return;
+
+        ThreatMap map = buildThreatMap(cluster.moveUnit, true, cluster.moveFlying, cluster.threatsAir, cluster.threatsGround);
+        computeClusterToGoal(cluster, map, goalX, goalY, false);
+        drawUntil = Float.POSITIVE_INFINITY;
+
+        autoLastStartPacked = startPacked;
+        autoLastGoalPacked = goalPacked;
+        autoLastThreatMode = cluster.threatMode;
+        autoNextCompute = Time.time + interval;
+    }
+
+    private ControlledCluster computeControlledCluster(){
+        if(player == null) return null;
+        Unit playerUnit = player.unit();
+        if(playerUnit == null) return null;
+
+        tmpUnits.clear();
+
+        if(control != null && control.input != null && control.input.selectedUnits != null && control.input.selectedUnits.any()){
+            for(int i = 0; i < control.input.selectedUnits.size; i++){
+                Unit u = control.input.selectedUnits.get(i);
+                if(u == null) continue;
+                if(u.team != player.team()) continue;
+                if(!u.isAdded() || u.dead()) continue;
+                tmpUnits.add(u);
+            }
+        }
+
+        if(tmpUnits.isEmpty()){
+            tmpUnits.add(playerUnit);
+        }
+
+        float sx = 0f, sy = 0f;
+        int flying = 0;
+        for(int i = 0; i < tmpUnits.size; i++){
+            Unit u = tmpUnits.get(i);
+            sx += u.x;
+            sy += u.y;
+            if(u.isFlying()) flying++;
+        }
+
+        float cx = sx / tmpUnits.size;
+        float cy = sy / tmpUnits.size;
+
+        int threatMode;
+        boolean moveFlying;
+        boolean threatsAir, threatsGround;
+
+        if(flying == tmpUnits.size){
+            threatMode = threatModeAir;
+            moveFlying = true;
+            threatsAir = true;
+            threatsGround = false;
+        }else if(flying == 0){
+            threatMode = threatModeGround;
+            moveFlying = false;
+            threatsAir = false;
+            threatsGround = true;
+        }else{
+            threatMode = threatModeBoth;
+            // Mixed: keep paths compatible with ground units.
+            moveFlying = false;
+            threatsAir = true;
+            threatsGround = true;
+        }
+
+        Unit moveUnit = null;
+        float minSpeed = Float.POSITIVE_INFINITY;
+
+        for(int i = 0; i < tmpUnits.size; i++){
+            Unit u = tmpUnits.get(i);
+            if(u == null) continue;
+            minSpeed = Math.min(minSpeed, u.speed());
+
+            if(moveUnit == null){
+                moveUnit = u;
+            }else if(!moveFlying && moveUnit.isFlying() && !u.isFlying()){
+                // Prefer a ground unit for ground movement constraints.
+                moveUnit = u;
+            }
+        }
+
+        if(moveUnit == null) moveUnit = playerUnit;
+        if(!Float.isFinite(minSpeed)) minSpeed = playerUnit.speed();
+
+        return new ControlledCluster(cx, cy, moveUnit, minSpeed, threatMode, moveFlying, threatsAir, threatsGround);
     }
 
     private boolean includeUnitsFromLast(){
@@ -826,6 +1004,60 @@ public class StealthPathMod extends mindustry.mod.Mod{
         drawPaths.add(new RenderPath(toWorldPointsFromTilesWithStart(compact, map.width, unit.x, unit.y, null), mousePathColor));
 
         lastDamage = estimateDamage(map, result.path, unit);
+
+        int seconds = Core.settings.getInt(keyPathDuration, 10);
+        drawUntil = seconds <= 0 ? Float.POSITIVE_INFINITY : Time.time + seconds * 60f;
+
+        if(showToasts) showToast(Core.bundle.format("sp.toast.path", result.path.size, Strings.autoFixed(lastDamage, 1)), 3f);
+    }
+
+    private void computeClusterToGoal(ControlledCluster cluster, ThreatMap map, int goalX, int goalY, boolean showToasts){
+        clearPaths();
+
+        int startX = worldToTile(cluster.x);
+        int startY = worldToTile(cluster.y);
+        if(!inBounds(map, startX, startY)){
+            if(showToasts) showToast("@sp.toast.no-path", 2.5f);
+            return;
+        }
+
+        if(!map.passable[startX + startY * map.width]){
+            int startIdx = findNearestPassable(map, startX, startY, 10);
+            if(startIdx == -1){
+                if(showToasts) showToast("@sp.toast.no-path", 2.5f);
+                return;
+            }
+            startX = startIdx % map.width;
+            startY = startIdx / map.width;
+        }
+
+        goalX = clamp(goalX, 0, map.width - 1);
+        goalY = clamp(goalY, 0, map.height - 1);
+        int goalIdx = findNearestPassable(map, goalX, goalY, 6);
+        if(goalIdx == -1){
+            if(showToasts) showToast("@sp.toast.no-path", 2.5f);
+            return;
+        }
+
+        IntSeq goals = new IntSeq();
+        goals.add(goalIdx);
+
+        boolean[] goalMask = new boolean[map.size];
+        goalMask[goalIdx] = true;
+
+        float speed = Math.max(0.0001f, cluster.speed);
+        PathResult safe = findPath(map, startX, startY, goals, goalMask, true, speed);
+        PathResult result = safe != null ? safe : findPath(map, startX, startY, goals, goalMask, false, speed);
+
+        if(result == null){
+            if(showToasts) showToast("@sp.toast.no-path", 2.5f);
+            return;
+        }
+
+        IntSeq compact = compactPath(result.path, map.width);
+        drawPaths.add(new RenderPath(toWorldPointsFromTilesWithStart(compact, map.width, cluster.x, cluster.y, null), mousePathColor));
+
+        lastDamage = estimateDamage(map, result.path, speed);
 
         int seconds = Core.settings.getInt(keyPathDuration, 10);
         drawUntil = seconds <= 0 ? Float.POSITIVE_INFINITY : Time.time + seconds * 60f;
@@ -1451,6 +1683,13 @@ public class StealthPathMod extends mindustry.mod.Mod{
         if(tilePath == null || tilePath.size <= 1) return 0f;
 
         float speed = Math.max(0.0001f, unit.speed());
+        return estimateDamage(map, tilePath, speed);
+    }
+
+    private static float estimateDamage(ThreatMap map, IntSeq tilePath, float speed){
+        if(tilePath == null || tilePath.size <= 1) return 0f;
+
+        speed = Math.max(0.0001f, speed);
         float dmg = 0f;
 
         for(int i = 0; i < tilePath.size - 1; i++){
@@ -1478,6 +1717,41 @@ public class StealthPathMod extends mindustry.mod.Mod{
         if(ui == null) return;
         String text = keyOrText.startsWith("@") ? Core.bundle.get(keyOrText.substring(1)) : keyOrText;
         ui.showInfoToast(text, seconds);
+    }
+
+    private void onClientChat(String message){
+        if(message == null) return;
+        String text = message.trim();
+        if(text.isEmpty()) return;
+
+        // Parse: <Attack>(x,y)
+        if(!text.startsWith("<Attack>")) return;
+        int lp = text.indexOf('(');
+        int comma = text.indexOf(',', lp + 1);
+        int rp = text.indexOf(')', comma + 1);
+        if(lp == -1 || comma == -1 || rp == -1) return;
+
+        String xs = text.substring(lp + 1, comma).trim();
+        String ys = text.substring(comma + 1, rp).trim();
+
+        try{
+            int x = Integer.parseInt(xs);
+            int y = Integer.parseInt(ys);
+
+            if(world == null) return;
+            x = clamp(x, 0, world.width() - 1);
+            y = clamp(y, 0, world.height() - 1);
+
+            attackTargetX = x;
+            attackTargetY = y;
+            attackTargetPacked = x + y * world.width();
+
+            if(autoMode == autoModeAttack){
+                autoNextCompute = 0f;
+            }
+        }catch(Throwable ignored){
+            // ignore
+        }
     }
 
     private static class Pos{
@@ -1564,6 +1838,26 @@ public class StealthPathMod extends mindustry.mod.Mod{
             this.path = path;
             this.safe = safe;
             this.damage = damage;
+        }
+    }
+
+    private static class ControlledCluster{
+        final float x, y;
+        final Unit moveUnit;
+        final float speed;
+        final int threatMode;
+        final boolean moveFlying;
+        final boolean threatsAir, threatsGround;
+
+        ControlledCluster(float x, float y, Unit moveUnit, float speed, int threatMode, boolean moveFlying, boolean threatsAir, boolean threatsGround){
+            this.x = x;
+            this.y = y;
+            this.moveUnit = moveUnit;
+            this.speed = speed;
+            this.threatMode = threatMode;
+            this.moveFlying = moveFlying;
+            this.threatsAir = threatsAir;
+            this.threatsGround = threatsGround;
         }
     }
 }

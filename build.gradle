@@ -3,7 +3,7 @@ plugins{
 }
 
 group = "stealthpath"
-version = "0.2.0"
+version = "2.0.0"
 
 dependencies{
     // Build against this Mindustry source checkout.
