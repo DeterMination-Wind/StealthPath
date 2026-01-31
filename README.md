@@ -4,6 +4,8 @@ Compute and draw safest/lowest-damage paths using enemy turret/unit ranges.
 
 根据敌方炮塔/单位射程计算并绘制最安全/最少受伤路线。
 
+Current version / 当前版本: `2.0.0`
+
 ## Other languages / 其他语言
 
 - Español: `README_es.md`
@@ -17,8 +19,19 @@ Compute and draw safest/lowest-damage paths using enemy turret/unit ranges.
 
 - `X` (`sp_path_turrets`): turrets only / 仅敌方炮塔（长按实时预览）
 - `Y` (`sp_path_all`): turrets + units / 敌方炮塔 + 单位（长按实时预览）
+- `N` (`sp_auto_mouse`): auto mode (unit cluster → mouse) / 自动模式（单位群→鼠标）
+- `M` (`sp_auto_attack`): auto mode (unit cluster → <Attack>(x,y)) / 自动模式（单位群→<Attack>(x,y)）
 - `K` (`sp_mode_cycle`): tap to cycle display mode / 点按轮流切换显示模式
 - `L` (`sp_threat_cycle`): cycle threat filter (ground/air/both) / 切换威胁计算（陆军/空军/一起）
+
+### Auto modes / 自动模式
+
+- Auto mode uses the **unit cluster center** as start (selected units if any, otherwise your current unit). It auto-detects air/ground/mixed and computes a Y-mode (turrets + units) lowest-damage path.  
+  自动模式以**单位群中心**为起点（若有框选单位则用框选，否则用玩家当前单位），自动识别空军/陆军/混合，并按 Y 模式（炮塔+单位威胁）计算最少受伤路径。
+- Hold `X/Y` is still the manual live preview; auto mode refresh rate is controlled by **Settings → Stealth Path → Preview refresh interval**.  
+  长按 `X/Y` 仍是手动实时预览；自动模式刷新频率由 **设置 → 偷袭小道 → 预览刷新间隔** 控制。
+- Attack chat target format: send `"<Attack>(x,y)"` in chat (x,y are **tile coordinates**). Only your own sent message is parsed client-side.  
+  攻击聊天目标格式：在聊天发送 `"<Attack>(x,y)"`（x,y 为**格子坐标**）；仅客户端解析你自己发出的消息。
 
 ### Modes / 模式
 

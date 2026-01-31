@@ -2,14 +2,23 @@
 
 Calcula y dibuja rutas más seguras / de menor daño usando el alcance de torretas y unidades enemigas.
 
+Versión actual: `2.0.0`
+
 ## Uso
 
 ### Teclas
 
 - `X` (`sp_path_turrets`): solo torretas (mantener = vista previa en vivo)
 - `Y` (`sp_path_all`): torretas + unidades (mantener = vista previa en vivo)
+- `N` (`sp_auto_mouse`): modo automático (grupo → ratón)
+- `M` (`sp_auto_attack`): modo automático (grupo → <Attack>(x,y))
 - `K` (`sp_mode_cycle`): tocar para alternar el modo de visualización
 - `L` (`sp_threat_cycle`): alternar filtro de amenaza (tierra/aire/ambos)
+
+### Modos automáticos
+
+- Usa el centro del grupo de unidades (las unidades seleccionadas si existen; si no, tu unidad actual) y detecta aire/tierra/mixto para calcular una ruta de menor daño (modo Y: torretas + unidades).
+- Objetivo por chat: envía `"<Attack>(x,y)"` en el chat (x,y son coordenadas de casilla). Solo se analiza tu propio mensaje (cliente).
 
 ### Modos
 
