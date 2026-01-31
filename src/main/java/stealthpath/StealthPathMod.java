@@ -41,6 +41,8 @@ import mindustry.world.meta.BuildVisibility;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.PriorityQueue;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static mindustry.Vars.content;
 import static mindustry.Vars.control;
@@ -65,6 +67,10 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private static final String keyGenClusterMaxPaths = "sp-gencluster-maxpaths";
     private static final String keyGenClusterStartFromCore = "sp-gencluster-start-core";
     private static final String keyGenClusterMinSize = "sp-gencluster-minsize";
+    private static final String keyAutoSafeDamageThreshold = "sp-auto-safe-damage-threshold";
+    private static final String keyAutoColorDead = "sp-auto-color-dead";
+    private static final String keyAutoColorWarn = "sp-auto-color-warn";
+    private static final String keyAutoColorSafe = "sp-auto-color-safe";
 
     private static final int targetModeCore = 0;
     private static final int targetModeNearest = 1;
@@ -97,6 +103,9 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private float drawUntil = 0f;
     private final Color genPathColor = new Color(0.235f, 0.48f, 1f, 1f);
     private final Color mousePathColor = new Color(0.635f, 0.486f, 0.898f, 1f);
+    private final Color autoDeadColor = new Color(1f, 0.23f, 0.19f, 1f);
+    private final Color autoWarnColor = new Color(1f, 0.84f, 0.0f, 1f);
+    private final Color autoSafeColor = new Color(0.2f, 0.78f, 0.35f, 1f);
     private float lastDamage = 0f;
     private boolean lastIncludeUnits = false;
     private final Seq<Building> tmpBuildings = new Seq<>();
@@ -125,6 +134,13 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private int attackTargetX = -1;
     private int attackTargetY = -1;
     private int attackTargetPacked = -1;
+    private int bufferedTargetX = -1;
+    private int bufferedTargetY = -1;
+    private int bufferedTargetPacked = -1;
+
+    private float autoNextNoUnitsToast = 0f;
+
+    private static final Pattern coordPattern = Pattern.compile("\\((-?\\d+)\\s*,\\s*(-?\\d+)\\)");
 
     public StealthPathMod(){
         Events.on(ClientLoadEvent.class, e -> {
@@ -133,11 +149,21 @@ public class StealthPathMod extends mindustry.mod.Mod{
             registerSettings();
             refreshGenPathColor();
             refreshMousePathColor();
+            refreshAutoColors();
             registerTriggers();
         });
 
-        Events.on(ClientChatEvent.class, e -> onClientChat(e.message));
-        Events.on(WorldLoadEvent.class, e -> clearPaths());
+        Events.on(ClientChatEvent.class, e -> onChatMessage(e.message));
+        Events.on(PlayerChatEvent.class, e -> onChatMessage(e.message));
+        Events.on(WorldLoadEvent.class, e -> {
+            clearPaths();
+            bufferedTargetPacked = -1;
+            bufferedTargetX = -1;
+            bufferedTargetY = -1;
+            attackTargetPacked = -1;
+            attackTargetX = -1;
+            attackTargetY = -1;
+        });
     }
 
     private void ensureDefaults(){
@@ -153,6 +179,10 @@ public class StealthPathMod extends mindustry.mod.Mod{
         Core.settings.defaults(keyGenClusterMaxPaths, 3);
         Core.settings.defaults(keyGenClusterStartFromCore, false);
         Core.settings.defaults(keyGenClusterMinSize, 2);
+        Core.settings.defaults(keyAutoSafeDamageThreshold, 10);
+        Core.settings.defaults(keyAutoColorDead, "ff3b30");
+        Core.settings.defaults(keyAutoColorWarn, "ffd60a");
+        Core.settings.defaults(keyAutoColorSafe, "34c759");
     }
 
     private void registerKeybinds(){
@@ -178,6 +208,12 @@ public class StealthPathMod extends mindustry.mod.Mod{
             table.sliderPref(keyPreviewRefresh, 6, 1, 60, 1, v -> Strings.autoFixed(v / 60f, 2) + "s");
             table.textPref(keyGenPathColor, "3c7bff", v -> refreshGenPathColor());
             table.textPref(keyMousePathColor, "a27ce5", v -> refreshMousePathColor());
+
+            table.row();
+            table.sliderPref(keyAutoSafeDamageThreshold, 10, 0, 200, 1, v -> String.valueOf(v));
+            table.textPref(keyAutoColorSafe, "34c759", v -> refreshAutoColors());
+            table.textPref(keyAutoColorWarn, "ffd60a", v -> refreshAutoColors());
+            table.textPref(keyAutoColorDead, "ff3b30", v -> refreshAutoColors());
 
             table.row();
             table.sliderPref(keyGenClusterMaxPaths, 3, 1, 10, 1, v -> String.valueOf(v));
@@ -411,7 +447,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
             autoLastThreatMode = Integer.MIN_VALUE;
             drawUntil = Float.POSITIVE_INFINITY;
 
-            if(autoMode == autoModeAttack && attackTargetPacked == -1){
+            if(autoMode == autoModeAttack && bufferedTargetPacked == -1){
                 showToast("@sp.toast.auto.attack.wait", 3f);
             }else{
                 showToast(autoMode == autoModeMouse ? "@sp.toast.auto.mouse.on" : "@sp.toast.auto.attack.on", 2.5f);
@@ -428,6 +464,10 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
         ControlledCluster cluster = computeControlledCluster();
         if(cluster == null){
+            if(Time.time >= autoNextNoUnitsToast){
+                showToast("@sp.toast.auto.no-units", 2.5f);
+                autoNextNoUnitsToast = Time.time + 90f;
+            }
             autoNextCompute = Time.time + interval;
             return;
         }
@@ -437,12 +477,12 @@ public class StealthPathMod extends mindustry.mod.Mod{
             goalX = clamp(worldToTile(Core.input.mouseWorldX()), 0, world.width() - 1);
             goalY = clamp(worldToTile(Core.input.mouseWorldY()), 0, world.height() - 1);
         }else{
-            if(attackTargetPacked == -1){
+            if(bufferedTargetPacked == -1){
                 autoNextCompute = Time.time + interval;
                 return;
             }
-            goalX = attackTargetX;
-            goalY = attackTargetY;
+            goalX = bufferedTargetX;
+            goalY = bufferedTargetY;
         }
 
         int startX = worldToTile(cluster.x);
@@ -483,17 +523,35 @@ public class StealthPathMod extends mindustry.mod.Mod{
             }
         }
 
-        if(tmpUnits.isEmpty()){
-            tmpUnits.add(playerUnit);
-        }
+        // Auto modes require a real controlled group (not just the player alone).
+        if(tmpUnits.isEmpty()) return null;
+        if(tmpUnits.size == 1 && tmpUnits.first() == playerUnit) return null;
 
         float sx = 0f, sy = 0f;
         int flying = 0;
+
+        boolean hasGround = false;
+        boolean hasAir = false;
+
+        float minSpeedGround = Float.POSITIVE_INFINITY;
+        float minHpGround = Float.POSITIVE_INFINITY;
+        float minSpeedAir = Float.POSITIVE_INFINITY;
+        float minHpAir = Float.POSITIVE_INFINITY;
+
         for(int i = 0; i < tmpUnits.size; i++){
             Unit u = tmpUnits.get(i);
             sx += u.x;
             sy += u.y;
-            if(u.isFlying()) flying++;
+            if(u.isFlying()){
+                flying++;
+                hasAir = true;
+                minSpeedAir = Math.min(minSpeedAir, u.speed());
+                minHpAir = Math.min(minHpAir, u.health());
+            }else{
+                hasGround = true;
+                minSpeedGround = Math.min(minSpeedGround, u.speed());
+                minHpGround = Math.min(minHpGround, u.health());
+            }
         }
 
         float cx = sx / tmpUnits.size;
@@ -522,13 +580,9 @@ public class StealthPathMod extends mindustry.mod.Mod{
         }
 
         Unit moveUnit = null;
-        float minSpeed = Float.POSITIVE_INFINITY;
-
         for(int i = 0; i < tmpUnits.size; i++){
             Unit u = tmpUnits.get(i);
             if(u == null) continue;
-            minSpeed = Math.min(minSpeed, u.speed());
-
             if(moveUnit == null){
                 moveUnit = u;
             }else if(!moveFlying && moveUnit.isFlying() && !u.isFlying()){
@@ -537,10 +591,21 @@ public class StealthPathMod extends mindustry.mod.Mod{
             }
         }
 
-        if(moveUnit == null) moveUnit = playerUnit;
-        if(!Float.isFinite(minSpeed)) minSpeed = playerUnit.speed();
+        float moveSpeed;
+        if(moveFlying){
+            moveSpeed = hasAir ? minSpeedAir : moveUnit.speed();
+        }else{
+            moveSpeed = hasGround ? minSpeedGround : moveUnit.speed();
+        }
 
-        return new ControlledCluster(cx, cy, moveUnit, minSpeed, threatMode, moveFlying, threatsAir, threatsGround);
+        if(!Float.isFinite(minSpeedGround)) minSpeedGround = Float.NaN;
+        if(!Float.isFinite(minHpGround)) minHpGround = Float.NaN;
+        if(!Float.isFinite(minSpeedAir)) minSpeedAir = Float.NaN;
+        if(!Float.isFinite(minHpAir)) minHpAir = Float.NaN;
+
+        return new ControlledCluster(cx, cy, moveUnit, moveSpeed, threatMode, moveFlying, threatsAir, threatsGround,
+            hasGround, minSpeedGround, minHpGround,
+            hasAir, minSpeedAir, minHpAir);
     }
 
     private boolean includeUnitsFromLast(){
@@ -1055,9 +1120,18 @@ public class StealthPathMod extends mindustry.mod.Mod{
         }
 
         IntSeq compact = compactPath(result.path, map.width);
-        drawPaths.add(new RenderPath(toWorldPointsFromTilesWithStart(compact, map.width, cluster.x, cluster.y, null), mousePathColor));
 
-        lastDamage = estimateDamage(map, result.path, speed);
+        float dmgGround = cluster.hasGround ? estimateDamage(map, result.path, cluster.minSpeedGround) : Float.NaN;
+        float dmgAir = cluster.hasAir ? estimateDamage(map, result.path, cluster.minSpeedAir) : Float.NaN;
+
+        float maxDmg = 0f;
+        if(cluster.hasGround && Float.isFinite(dmgGround)) maxDmg = Math.max(maxDmg, dmgGround);
+        if(cluster.hasAir && Float.isFinite(dmgAir)) maxDmg = Math.max(maxDmg, dmgAir);
+
+        Color c = autoPathColor(cluster, dmgGround, dmgAir, maxDmg);
+        drawPaths.add(new RenderPath(toWorldPointsFromTilesWithStart(compact, map.width, cluster.x, cluster.y, null), c));
+
+        lastDamage = maxDmg;
 
         int seconds = Core.settings.getInt(keyPathDuration, 10);
         drawUntil = seconds <= 0 ? Float.POSITIVE_INFINITY : Time.time + seconds * 60f;
@@ -1719,32 +1793,31 @@ public class StealthPathMod extends mindustry.mod.Mod{
         ui.showInfoToast(text, seconds);
     }
 
-    private void onClientChat(String message){
+    private void onChatMessage(String message){
         if(message == null) return;
         String text = message.trim();
         if(text.isEmpty()) return;
 
-        // Parse: <Attack>(x,y)
-        if(!text.startsWith("<Attack>")) return;
-        int lp = text.indexOf('(');
-        int comma = text.indexOf(',', lp + 1);
-        int rp = text.indexOf(')', comma + 1);
-        if(lp == -1 || comma == -1 || rp == -1) return;
+        if(world == null) return;
 
-        String xs = text.substring(lp + 1, comma).trim();
-        String ys = text.substring(comma + 1, rp).trim();
+        Matcher m = coordPattern.matcher(text);
+        if(!m.find()) return;
 
         try{
-            int x = Integer.parseInt(xs);
-            int y = Integer.parseInt(ys);
+            int x = Integer.parseInt(m.group(1));
+            int y = Integer.parseInt(m.group(2));
 
-            if(world == null) return;
             x = clamp(x, 0, world.width() - 1);
             y = clamp(y, 0, world.height() - 1);
 
+            bufferedTargetX = x;
+            bufferedTargetY = y;
+            bufferedTargetPacked = x + y * world.width();
+
+            // Preserve old <Attack> fields for compatibility, but buffer drives M mode now.
             attackTargetX = x;
             attackTargetY = y;
-            attackTargetPacked = x + y * world.width();
+            attackTargetPacked = bufferedTargetPacked;
 
             if(autoMode == autoModeAttack){
                 autoNextCompute = 0f;
@@ -1752,6 +1825,35 @@ public class StealthPathMod extends mindustry.mod.Mod{
         }catch(Throwable ignored){
             // ignore
         }
+    }
+
+    private void refreshAutoColors(){
+        String safe = Core.settings.getString(keyAutoColorSafe, "34c759");
+        String warn = Core.settings.getString(keyAutoColorWarn, "ffd60a");
+        String dead = Core.settings.getString(keyAutoColorDead, "ff3b30");
+
+        if(!tryParseHexColor(safe, autoSafeColor)){
+            autoSafeColor.set(0.2f, 0.78f, 0.35f, 1f);
+        }
+        if(!tryParseHexColor(warn, autoWarnColor)){
+            autoWarnColor.set(1f, 0.84f, 0.0f, 1f);
+        }
+        if(!tryParseHexColor(dead, autoDeadColor)){
+            autoDeadColor.set(1f, 0.23f, 0.19f, 1f);
+        }
+    }
+
+    private Color autoPathColor(ControlledCluster cluster, float dmgGround, float dmgAir, float maxDmg){
+        float safeThresh = Math.max(0f, Core.settings.getInt(keyAutoSafeDamageThreshold, 10));
+        if(maxDmg < safeThresh){
+            return autoSafeColor;
+        }
+
+        boolean groundDead = cluster.hasGround && Float.isFinite(dmgGround) && Float.isFinite(cluster.minHpGround) && dmgGround >= cluster.minHpGround;
+        boolean airDead = cluster.hasAir && Float.isFinite(dmgAir) && Float.isFinite(cluster.minHpAir) && dmgAir >= cluster.minHpAir;
+
+        boolean anySurvive = (cluster.hasGround && !groundDead) || (cluster.hasAir && !airDead);
+        return anySurvive ? autoWarnColor : autoDeadColor;
     }
 
     private static class Pos{
@@ -1848,8 +1950,16 @@ public class StealthPathMod extends mindustry.mod.Mod{
         final int threatMode;
         final boolean moveFlying;
         final boolean threatsAir, threatsGround;
+        final boolean hasGround;
+        final float minSpeedGround;
+        final float minHpGround;
+        final boolean hasAir;
+        final float minSpeedAir;
+        final float minHpAir;
 
-        ControlledCluster(float x, float y, Unit moveUnit, float speed, int threatMode, boolean moveFlying, boolean threatsAir, boolean threatsGround){
+        ControlledCluster(float x, float y, Unit moveUnit, float speed, int threatMode, boolean moveFlying, boolean threatsAir, boolean threatsGround,
+                          boolean hasGround, float minSpeedGround, float minHpGround,
+                          boolean hasAir, float minSpeedAir, float minHpAir){
             this.x = x;
             this.y = y;
             this.moveUnit = moveUnit;
@@ -1858,6 +1968,12 @@ public class StealthPathMod extends mindustry.mod.Mod{
             this.moveFlying = moveFlying;
             this.threatsAir = threatsAir;
             this.threatsGround = threatsGround;
+            this.hasGround = hasGround;
+            this.minSpeedGround = minSpeedGround;
+            this.minHpGround = minHpGround;
+            this.hasAir = hasAir;
+            this.minSpeedAir = minSpeedAir;
+            this.minHpAir = minHpAir;
         }
     }
 }
