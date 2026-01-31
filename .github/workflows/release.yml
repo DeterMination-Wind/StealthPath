@@ -1,4 +1,4 @@
-name: Release
+name: Release (Main Builds)
 
 on:
   push:
@@ -14,11 +14,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Publish release asset
+      - name: Compute tag
+        id: vars
+        shell: bash
+        run: |
+          short_sha="${GITHUB_SHA::7}"
+          echo "tag=main-${GITHUB_RUN_NUMBER}-${short_sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Create new release (no overwrite)
         uses: ncipollo/release-action@v1
         with:
-          tag: Main
-          name: V0.2.0
-          allowUpdates: true
-          replacesArtifacts: true
+          tag: ${{ steps.vars.outputs.tag }}
+          name: Main build ${{ steps.vars.outputs.tag }}
+          allowUpdates: false
           artifacts: dist/stealth-path.zip
