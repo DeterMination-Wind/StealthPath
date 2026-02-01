@@ -26,7 +26,8 @@ tasks.register("copyZipToRoot", Copy){
     doNotTrackState("Copies into root directory which may contain unreadable Gradle lock files.")
     dependsOn tasks.named("jar")
     from(tasks.named("jar").flatMap{ it.archiveFile })
-    into(rootDir)
+    // "root" here means the directory alongside Mindustry-main/Mindustry-master.
+    into(rootDir.parentFile)
 }
 
 tasks.named("jar").configure{
