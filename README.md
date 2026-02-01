@@ -4,7 +4,7 @@ Compute and draw safest/lowest-damage paths using enemy turret/unit ranges.
 
 根据敌方炮塔/单位射程计算并绘制最安全/最少受伤路线。
 
-Current version / 当前版本: `2.0.4`
+Current version / 当前版本: `2.0.5`
 
 ## Other languages / 其他语言
 
@@ -36,6 +36,8 @@ Current version / 当前版本: `2.0.4`
   选中单位过多时，触发自动移动会自动分批下达指令，以尽量保持队形更紧凑。
 - If the selected units are split into multiple groups with gaps > 5 tiles, auto mode will compute and draw a path for each group separately.  
   若选中单位分成多个相距超过 5 格的集群，自动模式会分别计算并同时绘制每个集群的路径。
+- While following an auto-move command, the mod will update RTS waypoints when the best path changes (e.g. a turret starts firing).  
+  在自动移动执行过程中，若最优路径发生变化（例如炮塔突然启用），mod 会自动更新 RTS 路点让单位改走新路线。
 
 ### Modes / 模式
 

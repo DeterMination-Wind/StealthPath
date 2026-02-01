@@ -12,9 +12,15 @@ import arc.input.KeyBind;
 import arc.math.Mathf;
 import arc.scene.event.InputEvent;
 import arc.scene.event.InputListener;
+import arc.scene.style.Drawable;
+import arc.scene.ui.CheckBox;
 import arc.scene.ui.Dialog;
+import arc.scene.ui.Label;
 import arc.scene.ui.ScrollPane;
+import arc.scene.ui.Slider;
+import arc.scene.ui.TextField;
 import arc.scene.ui.TextButton;
+import arc.scene.event.Touchable;
 import arc.scene.ui.layout.Table;
 import arc.struct.IntSeq;
 import arc.struct.Seq;
@@ -35,6 +41,7 @@ import mindustry.graphics.Pal;
 import mindustry.ui.Fonts;
 import mindustry.ui.Styles;
 import mindustry.ui.dialogs.BaseDialog;
+import mindustry.ui.dialogs.SettingsMenuDialog;
 import mindustry.world.Tile;
 import mindustry.world.Block;
 import mindustry.world.blocks.defense.ForceProjector;
@@ -65,6 +72,14 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private static final String keyTargetBlock = "sp-target-block";
     private static final String keyPathDuration = "sp-path-duration";
     private static final String keyPathWidth = "sp-path-width";
+    private static final String keyPathAlpha = "sp-path-alpha";
+    private static final String keyShowDamageText = "sp-show-damage-text";
+    private static final String keyDamageTextScale = "sp-damage-text-scale";
+    private static final String keyDamageLabelAtEnd = "sp-damage-label-at-end";
+    private static final String keyDamageTextOffsetScale = "sp-damage-offset-scale";
+    private static final String keyShowEndpoints = "sp-show-endpoints";
+    private static final String keyStartDotScale = "sp-start-dot-scale";
+    private static final String keyEndDotScale = "sp-end-dot-scale";
     private static final String keyPreviewRefresh = "sp-preview-refresh";
     private static final String keyThreatMode = "sp-threat-mode";
     private static final String keyGenPathColor = "sp-arrow-color";
@@ -77,6 +92,8 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private static final String keyAutoColorWarn = "sp-auto-color-warn";
     private static final String keyAutoColorSafe = "sp-auto-color-safe";
     private static final String keyAutoMoveEnabled = "sp-auto-move-enabled";
+    private static final String keyAutoThreatPaddingMax = "sp-auto-threat-padding-max";
+    private static final String keyShowToasts = "sp-show-toasts";
 
     private static final int targetModeCore = 0;
     private static final int targetModeNearest = 1;
@@ -139,6 +156,13 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private float autoNextCompute = 0f;
     private int autoThreatExtraPaddingTiles = 0;
     private int autoMoveCommandId = 0;
+    private final arc.struct.IntIntMap autoMoveCommandByUnit = new arc.struct.IntIntMap();
+    private boolean autoMoveFollow = false;
+    private int autoMoveFollowGoalX = -1;
+    private int autoMoveFollowGoalY = -1;
+    private int autoMoveFollowGoalPacked = -1;
+    private final arc.struct.IntIntMap autoMoveFollowPathHash = new arc.struct.IntIntMap();
+    private final arc.struct.IntFloatMap autoMoveFollowLastIssue = new arc.struct.IntFloatMap();
 
     private float autoMoveMonitorUntil = 0f;
     private float autoMoveMonitorNextCheck = 0f;
@@ -190,6 +214,12 @@ public class StealthPathMod extends mindustry.mod.Mod{
             attackTargetY = -1;
             autoThreatExtraPaddingTiles = 0;
             autoMoveMonitorUntil = 0f;
+            autoMoveCommandId++;
+            autoMoveCommandByUnit.clear();
+            autoMoveFollow = false;
+            autoMoveFollowGoalPacked = -1;
+            autoMoveFollowPathHash.clear();
+            autoMoveFollowLastIssue.clear();
             invalidatePassableCache();
         });
 
@@ -211,6 +241,14 @@ public class StealthPathMod extends mindustry.mod.Mod{
         Core.settings.defaults(keyTargetBlock, "");
         Core.settings.defaults(keyPathDuration, 10);
         Core.settings.defaults(keyPathWidth, 2);
+        Core.settings.defaults(keyPathAlpha, 85);
+        Core.settings.defaults(keyShowDamageText, true);
+        Core.settings.defaults(keyDamageTextScale, 60);
+        Core.settings.defaults(keyDamageLabelAtEnd, false);
+        Core.settings.defaults(keyDamageTextOffsetScale, 100);
+        Core.settings.defaults(keyShowEndpoints, true);
+        Core.settings.defaults(keyStartDotScale, 220);
+        Core.settings.defaults(keyEndDotScale, 260);
         Core.settings.defaults(keyPreviewRefresh, 6);
         Core.settings.defaults(keyThreatMode, threatModeUnset);
         Core.settings.defaults(keyGenPathColor, "3c7bff");
@@ -223,6 +261,8 @@ public class StealthPathMod extends mindustry.mod.Mod{
         Core.settings.defaults(keyAutoColorWarn, "ffd60a");
         Core.settings.defaults(keyAutoColorSafe, "34c759");
         Core.settings.defaults(keyAutoMoveEnabled, true);
+        Core.settings.defaults(keyAutoThreatPaddingMax, 6);
+        Core.settings.defaults(keyShowToasts, true);
     }
 
     private void registerKeybinds(){
@@ -243,33 +283,78 @@ public class StealthPathMod extends mindustry.mod.Mod{
         if(ui == null || ui.settings == null) return;
 
         ui.settings.addCategory("@sp.category", table -> {
-            table.checkPref(keyEnabled, true);
-            table.sliderPref(keyPathDuration, 10, 0, 60, 5, v -> v == 0 ? "inf" : v + "s");
-            table.sliderPref(keyPathWidth, 2, 1, 6, 1, v -> String.valueOf(v));
-            table.sliderPref(keyPreviewRefresh, 6, 1, 60, 1, v -> Strings.autoFixed(v / 60f, 2) + "s");
-            table.textPref(keyGenPathColor, "3c7bff", v -> refreshGenPathColor());
-            table.textPref(keyMousePathColor, "a27ce5", v -> refreshMousePathColor());
+            table.pref(new HeaderSetting("@sp.section.general", Icon.settings));
+            table.pref(new IconCheckSetting(keyEnabled, true, Icon.ok, null));
+            table.pref(new IconCheckSetting(keyShowToasts, true, Icon.chat, null));
+            table.pref(new IconSliderSetting(keyPathDuration, 10, 0, 60, 5, Icon.info, v -> v == 0 ? "inf" : v + "s", null));
+            table.pref(new IconSliderSetting(keyPathWidth, 2, 1, 6, 1, Icon.resize, v -> String.valueOf(v), null));
+            table.pref(new IconSliderSetting(keyPathAlpha, 85, 0, 100, 5, Icon.image, v -> v + "%", null));
+            table.pref(new IconCheckSetting(keyShowEndpoints, true, Icon.image, null));
+            table.pref(new IconSliderSetting(keyStartDotScale, 220, 0, 400, 10, Icon.right, v -> v + "%", null));
+            table.pref(new IconSliderSetting(keyEndDotScale, 260, 0, 400, 10, Icon.left, v -> v + "%", null));
+            table.pref(new IconCheckSetting(keyShowDamageText, true, Icon.info, null));
+            table.pref(new IconSliderSetting(keyDamageTextScale, 60, 20, 140, 5, Icon.resize, v -> v + "%", null));
+            table.pref(new IconCheckSetting(keyDamageLabelAtEnd, false, Icon.up, null));
+            table.pref(new IconSliderSetting(keyDamageTextOffsetScale, 100, 0, 300, 10, Icon.move, v -> v + "%", null));
+            table.pref(new IconSliderSetting(keyPreviewRefresh, 6, 1, 60, 1, Icon.refresh, v -> Strings.autoFixed(v / 60f, 2) + "s", null));
 
-            table.row();
-            table.sliderPref(keyAutoSafeDamageThreshold, 10, 0, 200, 1, v -> String.valueOf(v));
-            table.textPref(keyAutoColorSafe, "34c759", v -> refreshAutoColors());
-            table.textPref(keyAutoColorWarn, "ffd60a", v -> refreshAutoColors());
-            table.textPref(keyAutoColorDead, "ff3b30", v -> refreshAutoColors());
-            table.checkPref(keyAutoMoveEnabled, true);
+            table.pref(new HeaderSetting("@sp.section.colors", Icon.pencil));
+            table.pref(new IconTextSetting(keyGenPathColor, "3c7bff", Icon.effect, v -> refreshGenPathColor()));
+            table.pref(new IconTextSetting(keyMousePathColor, "a27ce5", Icon.zoom, v -> refreshMousePathColor()));
 
-            table.row();
-            table.sliderPref(keyGenClusterMaxPaths, 3, 1, 10, 1, v -> String.valueOf(v));
-            table.sliderPref(keyGenClusterMinSize, 2, 2, 10, 1, v -> String.valueOf(v));
-            table.checkPref(keyGenClusterStartFromCore, false);
+            table.pref(new HeaderSetting("@sp.section.auto", Icon.commandRally));
+            table.pref(new IconSliderSetting(keyAutoSafeDamageThreshold, 10, 0, 200, 1, Icon.warning, v -> String.valueOf(v), null));
+            table.pref(new IconTextSetting(keyAutoColorSafe, "34c759", Icon.ok, v -> refreshAutoColors()));
+            table.pref(new IconTextSetting(keyAutoColorWarn, "ffd60a", Icon.warning, v -> refreshAutoColors()));
+            table.pref(new IconTextSetting(keyAutoColorDead, "ff3b30", Icon.cancel, v -> refreshAutoColors()));
+            table.pref(new IconCheckSetting(keyAutoMoveEnabled, true, Icon.commandRally, null));
+            table.pref(new IconSliderSetting(keyAutoThreatPaddingMax, 6, 0, 20, 1, Icon.warning, v -> v + " tiles", null));
 
-            table.row();
+            table.pref(new HeaderSetting("@sp.section.gencluster", Icon.power));
+            table.pref(new IconSliderSetting(keyGenClusterMaxPaths, 3, 1, 10, 1, Icon.list, v -> String.valueOf(v), null));
+            table.pref(new IconSliderSetting(keyGenClusterMinSize, 2, 2, 10, 1, Icon.filter, v -> String.valueOf(v), null));
+            table.pref(new IconCheckSetting(keyGenClusterStartFromCore, false, Icon.players, null));
+
+            table.pref(new HeaderSetting("@sp.section.target", Icon.modeAttack));
+            addThreatModeRow(table);
             addTargetRow(table);
         });
+    }
+
+    private void addThreatModeRow(Table table){
+        table.table(Tex.button, t -> {
+            t.left().margin(10f);
+            t.image(Icon.warning).size(20f).padRight(8f);
+            t.add("@sp.setting.threat.mode").left().width(170f);
+
+            TextButton modeButton = t.button("", Styles.flatt, this::cycleThreatMode)
+                .growX()
+                .height(40f)
+                .padLeft(8f)
+                .get();
+
+            modeButton.update(() -> modeButton.setText(threatModeDisplay(Core.settings.getInt(keyThreatMode, threatModeGround))));
+        }).growX().padTop(6f);
+
+        table.row();
+    }
+
+    private static String threatModeDisplay(int mode){
+        switch(mode){
+            case threatModeAir:
+                return Core.bundle.get("sp.setting.threat.mode.air");
+            case threatModeBoth:
+                return Core.bundle.get("sp.setting.threat.mode.both");
+            case threatModeGround:
+            default:
+                return Core.bundle.get("sp.setting.threat.mode.ground");
+        }
     }
 
     private void addTargetRow(Table table){
         table.table(Tex.button, t -> {
             t.left().margin(10f);
+            t.image(Icon.commandAttack).size(20f).padRight(8f);
             t.add("@sp.setting.target.mode").left().width(170f);
 
             TextButton modeButton = t.button("", Styles.flatt, this::cycleTargetMode)
@@ -284,6 +369,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
         table.row();
         table.table(Tex.button, t -> {
             t.left().margin(10f);
+            t.image(Icon.grid).size(20f).padRight(8f);
             t.add("@sp.setting.target.block").left().width(170f);
 
             TextButton selectButton = t.button("", Styles.flatt, () -> showBlockSelectDialog(block -> Core.settings.put(keyTargetBlock, block == null ? "" : block.name)))
@@ -490,7 +576,10 @@ public class StealthPathMod extends mindustry.mod.Mod{
         if(clusters == null || clusters.isEmpty()) return;
 
         int goalX, goalY;
-        if(autoMode == autoModeMouse){
+        if(autoMoveFollow && autoMoveFollowGoalPacked != -1){
+            goalX = autoMoveFollowGoalX;
+            goalY = autoMoveFollowGoalY;
+        }else if(autoMode == autoModeMouse){
             goalX = clamp(worldToTile(Core.input.mouseWorldX()), 0, world.width() - 1);
             goalY = clamp(worldToTile(Core.input.mouseWorldY()), 0, world.height() - 1);
         }else{
@@ -503,6 +592,16 @@ public class StealthPathMod extends mindustry.mod.Mod{
         float minHpGround = Float.POSITIVE_INFINITY;
         float minHpAir = Float.POSITIVE_INFINITY;
         float predictedMax = 0f;
+        int goalPacked = goalX + goalY * world.width();
+
+        // Lock auto-move destination and enable follow-up rerouting.
+        autoMoveFollow = false;
+        autoMoveFollowGoalX = goalX;
+        autoMoveFollowGoalY = goalY;
+        autoMoveFollowGoalPacked = goalPacked;
+        autoMoveFollowPathHash.clear();
+        autoMoveFollowLastIssue.clear();
+        autoMoveCommandByUnit.clear();
 
         for(int i = 0; i < clusters.size; i++){
             ControlledCluster cluster = clusters.get(i);
@@ -516,6 +615,8 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
             issueRtsMoveAlongPath(cluster, best.path, map.width);
             movedAny = true;
+            autoMoveFollowPathHash.put(cluster.key, hashWaypointPath(best.path, map.width));
+            autoMoveFollowLastIssue.put(cluster.key, Time.time);
 
             if(cluster.hasGround && Float.isFinite(cluster.minHpGround)){
                 minHpGround = Math.min(minHpGround, cluster.minHpGround);
@@ -529,6 +630,8 @@ public class StealthPathMod extends mindustry.mod.Mod{
         }
 
         if(!movedAny) return;
+
+        autoMoveFollow = true;
 
         autoMoveMonitorUntil = Float.POSITIVE_INFINITY;
         autoMoveMonitorNextCheck = Time.time + previewRefreshInterval();
@@ -611,7 +714,8 @@ public class StealthPathMod extends mindustry.mod.Mod{
         // If the mod predicted a safe (0 damage) path but units still took damage, increase the safety padding.
         if(!(Float.isFinite(autoMoveMonitorPredictedMaxDmg) && autoMoveMonitorPredictedMaxDmg <= 0.0001f)) return;
 
-        autoThreatExtraPaddingTiles = Math.min(6, autoThreatExtraPaddingTiles + 1);
+        int maxPadding = Math.max(0, Core.settings.getInt(keyAutoThreatPaddingMax, 6));
+        autoThreatExtraPaddingTiles = Math.min(maxPadding, autoThreatExtraPaddingTiles + 1);
         autoNextCompute = 0f;
 
         int goalX, goalY;
@@ -642,6 +746,10 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
             issueRtsMoveAlongPath(cluster, best.path, map.width);
             issuedAny = true;
+            if(autoMoveFollow){
+                autoMoveFollowPathHash.put(cluster.key, hashWaypointPath(best.path, map.width));
+                autoMoveFollowLastIssue.put(cluster.key, Time.time);
+            }
             if(Float.isFinite(best.maxDmg)){
                 predictedMax = Math.max(predictedMax, best.maxDmg);
             }
@@ -662,6 +770,11 @@ public class StealthPathMod extends mindustry.mod.Mod{
             autoThreatExtraPaddingTiles = 0;
             autoMoveMonitorUntil = 0f;
             autoMoveCommandId++;
+            autoMoveCommandByUnit.clear();
+            autoMoveFollow = false;
+            autoMoveFollowGoalPacked = -1;
+            autoMoveFollowPathHash.clear();
+            autoMoveFollowLastIssue.clear();
             showToast(requested == autoModeMouse ? "@sp.toast.auto.mouse.off" : "@sp.toast.auto.attack.off", 2.5f);
         }else{
             autoMode = requested;
@@ -673,6 +786,11 @@ public class StealthPathMod extends mindustry.mod.Mod{
             autoThreatExtraPaddingTiles = 0;
             autoMoveMonitorUntil = 0f;
             autoMoveCommandId++;
+            autoMoveCommandByUnit.clear();
+            autoMoveFollow = false;
+            autoMoveFollowGoalPacked = -1;
+            autoMoveFollowPathHash.clear();
+            autoMoveFollowLastIssue.clear();
 
             if(autoMode == autoModeAttack && bufferedTargetPacked == -1){
                 showToast("@sp.toast.auto.attack.wait", 3f);
@@ -700,7 +818,10 @@ public class StealthPathMod extends mindustry.mod.Mod{
         }
 
         int goalX, goalY;
-        if(autoMode == autoModeMouse){
+        if(autoMoveFollow && autoMoveFollowGoalPacked != -1){
+            goalX = autoMoveFollowGoalX;
+            goalY = autoMoveFollowGoalY;
+        }else if(autoMode == autoModeMouse){
             goalX = clamp(worldToTile(Core.input.mouseWorldX()), 0, world.width() - 1);
             goalY = clamp(worldToTile(Core.input.mouseWorldY()), 0, world.height() - 1);
         }else{
@@ -747,6 +868,21 @@ public class StealthPathMod extends mindustry.mod.Mod{
             if(Float.isFinite(sp.maxDmg)){
                 maxDmg = Math.max(maxDmg, sp.maxDmg);
             }
+
+            // If auto-move was triggered, keep updating RTS waypoints when the computed path changes (e.g. turrets start firing).
+            if(autoMoveFollow && Core.settings.getBool(keyAutoMoveEnabled, true)){
+                int newHash = hashWaypointPath(sp.path, map.width);
+                int prevHash = autoMoveFollowPathHash.get(cluster.key, Integer.MIN_VALUE);
+                float lastIssued = autoMoveFollowLastIssue.get(cluster.key, -999999f);
+
+                if(prevHash == Integer.MIN_VALUE || prevHash != newHash){
+                    if(Time.time - lastIssued >= baseInterval){
+                        issueRtsMoveAlongPath(cluster, sp.path, map.width);
+                        autoMoveFollowPathHash.put(cluster.key, newHash);
+                        autoMoveFollowLastIssue.put(cluster.key, Time.time);
+                    }
+                }
+            }
         }
 
         if(!anyPath){
@@ -756,6 +892,9 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
         lastDamage = maxDmg;
         drawUntil = Float.POSITIVE_INFINITY;
+        if(autoMoveFollow){
+            autoMoveMonitorPredictedMaxDmg = maxDmg;
+        }
 
         autoLastStartPacked = startHash;
         autoLastGoalPacked = goalPacked;
@@ -763,7 +902,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
         // If the goal/start didn't move, slow down updates to reduce CPU usage.
         float slowInterval = Math.min(240f, baseInterval * 8f);
-        autoNextCompute = Time.time + (unchanged ? slowInterval : baseInterval);
+        autoNextCompute = Time.time + (autoMoveFollow ? baseInterval : (unchanged ? slowInterval : baseInterval));
     }
 
     private Seq<ControlledCluster> computeControlledClusters(){
@@ -847,6 +986,8 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
     private static ControlledCluster buildControlledCluster(Seq<Unit> members){
         if(members == null || members.isEmpty()) return null;
+
+        int key = computeClusterKey(members);
 
         float sx = 0f, sy = 0f;
         int flying = 0;
@@ -968,11 +1109,37 @@ public class StealthPathMod extends mindustry.mod.Mod{
         if(!Float.isFinite(minSpeedAir)) minSpeedAir = Float.NaN;
         if(!Float.isFinite(minHpAir)) minHpAir = Float.NaN;
 
-        return new ControlledCluster(members, cx, cy, moveUnit, moveSpeed, threatMode, moveFlying, threatsAir, threatsGround,
+        return new ControlledCluster(members, key, cx, cy, moveUnit, moveSpeed, threatMode, moveFlying, threatsAir, threatsGround,
             hasGround, minSpeedGround, minHpGround,
             hasAir, minSpeedAir, minHpAir,
             leftX, leftY, rightX, rightY, topX, topY, bottomX, bottomY,
             maxHitRadiusWorld, threatClearanceWorld);
+    }
+
+    private static int computeClusterKey(Seq<Unit> members){
+        if(members == null || members.isEmpty()) return 0;
+
+        int min = Integer.MAX_VALUE;
+        int max = Integer.MIN_VALUE;
+        long sum = 0L;
+        int xor = 0;
+
+        for(int i = 0; i < members.size; i++){
+            Unit u = members.get(i);
+            if(u == null) continue;
+            int id = u.id;
+            if(id < min) min = id;
+            if(id > max) max = id;
+            sum += id;
+            xor ^= id;
+        }
+
+        int h = members.size;
+        h = 31 * h + (min == Integer.MAX_VALUE ? 0 : min);
+        h = 31 * h + (max == Integer.MIN_VALUE ? 0 : max);
+        h = 31 * h + (int)(sum ^ (sum >>> 32));
+        h = 31 * h + xor;
+        return h;
     }
 
     private boolean includeUnitsFromLast(){
@@ -1075,18 +1242,26 @@ public class StealthPathMod extends mindustry.mod.Mod{
         Draw.draw(Layer.overlayUI + 0.01f, () -> {
             float baseWidth = Core.settings.getInt(keyPathWidth, 2);
             float stroke = baseWidth / Math.max(0.0001f, renderer.getDisplayScale());
+            float alpha = Mathf.clamp(Core.settings.getInt(keyPathAlpha, 85) / 100f);
 
             Lines.stroke(stroke);
 
             float prevFontScale = Fonts.outline.getScaleX();
-            float textScale = 0.6f / Math.max(0.0001f, renderer.getDisplayScale());
+            float textScale = (Mathf.clamp(Core.settings.getInt(keyDamageTextScale, 60) / 100f) * 0.6f) / Math.max(0.0001f, renderer.getDisplayScale());
             Fonts.outline.getData().setScale(textScale);
+
+            boolean showDamageText = Core.settings.getBool(keyShowDamageText, true);
+            boolean labelAtEnd = Core.settings.getBool(keyDamageLabelAtEnd, false);
+            float offsetScale = Mathf.clamp(Core.settings.getInt(keyDamageTextOffsetScale, 100) / 100f, 0f, 5f);
+            boolean showEndpoints = Core.settings.getBool(keyShowEndpoints, true);
+            float startDotScale = Mathf.clamp(Core.settings.getInt(keyStartDotScale, 220) / 100f, 0f, 10f);
+            float endDotScale = Mathf.clamp(Core.settings.getInt(keyEndDotScale, 260) / 100f, 0f, 10f);
 
             for(int p = 0; p < drawPaths.size; p++){
                 RenderPath path = drawPaths.get(p);
                 if(path == null || path.points == null || path.points.isEmpty()) continue;
 
-                Draw.color(path.color, 0.85f);
+                Draw.color(path.color, alpha);
 
                 Seq<Pos> pts = path.points;
                 for(int i = 0; i < pts.size - 1; i++){
@@ -1098,15 +1273,17 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
                 Pos start = pts.first();
                 Pos end = pts.peek();
-                if(start != null) Fill.circle(start.x, start.y, stroke * 2.2f);
-                if(end != null) Fill.circle(end.x, end.y, stroke * 2.6f);
+                if(showEndpoints){
+                    if(start != null) Fill.circle(start.x, start.y, stroke * startDotScale);
+                    if(end != null) Fill.circle(end.x, end.y, stroke * endDotScale);
+                }
 
-                if(path.damageText != null){
-                    int labelIndex = Math.min(pts.size - 1, Math.max(0, pts.size / 2));
+                if(showDamageText && path.damageText != null){
+                    int labelIndex = labelAtEnd ? (pts.size - 1) : Math.min(pts.size - 1, Math.max(0, pts.size / 2));
                     Pos labelPos = pts.get(labelIndex);
                     if(labelPos != null){
-                        float offset = Math.max(stroke * 10f, tilesize * 0.45f);
-                        Draw.color(path.color);
+                        float offset = Math.max(stroke * 10f, tilesize * 0.45f) * offsetScale;
+                        Draw.color(path.color, alpha);
                         Fonts.outline.draw(path.damageText, labelPos.x, labelPos.y + offset, Align.center);
                     }
                 }
@@ -1626,8 +1803,10 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
         if(waypoints.isEmpty()) return;
 
-        // Cancel any delayed batches from a previous command.
         int commandId = ++autoMoveCommandId;
+        for(int i = 0; i < units.size; i++){
+            autoMoveCommandByUnit.put(units.get(i).id, commandId);
+        }
 
         // If the selected group is very large, stagger movement in a few batches.
         // This helps keep the formation narrower so units don't drift into turret ranges while following the same path.
@@ -1677,7 +1856,9 @@ public class StealthPathMod extends mindustry.mod.Mod{
             }else{
                 int[] batchIds = ids;
                 Time.run(delay, () -> {
-                    if(autoMoveCommandId != commandId) return;
+                    for(int k = 0; k < batchIds.length; k++){
+                        if(autoMoveCommandByUnit.get(batchIds[k], -1) != commandId) return;
+                    }
                     if(!state.isGame() || player == null) return;
                     for(int i = 0; i < waypoints.size; i++){
                         boolean queue = i != 0;
@@ -2485,6 +2666,26 @@ public class StealthPathMod extends mindustry.mod.Mod{
         return out;
     }
 
+    private static int hashWaypointPath(IntSeq tilePath, int width){
+        if(tilePath == null || tilePath.isEmpty()) return 0;
+
+        IntSeq compact = compactPath(tilePath, width);
+        if(compact == null || compact.isEmpty()) compact = tilePath;
+
+        int maxWaypoints = 12;
+        int step = Math.max(1, compact.size / maxWaypoints);
+
+        int h = 1;
+        for(int i = 0; i < compact.size; i += step){
+            h = 31 * h + compact.items[i];
+        }
+
+        int last = compact.items[compact.size - 1];
+        h = 31 * h + last;
+        h = 31 * h + compact.size;
+        return h;
+    }
+
     private static float estimateDamage(ThreatMap map, IntSeq tilePath, Unit unit){
         if(tilePath == null || tilePath.size <= 1) return 0f;
 
@@ -2521,8 +2722,157 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
     private void showToast(String keyOrText, float seconds){
         if(ui == null) return;
+        if(!Core.settings.getBool(keyShowToasts, true)) return;
         String text = keyOrText.startsWith("@") ? Core.bundle.get(keyOrText.substring(1)) : keyOrText;
         ui.showInfoToast(text, seconds);
+    }
+
+    private static class HeaderSetting extends SettingsMenuDialog.SettingsTable.Setting{
+        private final String titleKeyOrText;
+        private final arc.scene.style.Drawable icon;
+
+        public HeaderSetting(String titleKeyOrText, arc.scene.style.Drawable icon){
+            super("sp-header");
+            this.titleKeyOrText = titleKeyOrText;
+            this.icon = icon;
+        }
+
+        @Override
+        public void add(SettingsMenuDialog.SettingsTable table){
+            table.row();
+            table.table(t -> {
+                t.left();
+                if(icon != null){
+                    t.image(icon).size(18f).padRight(6f);
+                }
+                t.add(titleKeyOrText.startsWith("@") ? Core.bundle.get(titleKeyOrText.substring(1)) : titleKeyOrText)
+                    .color(Color.gray)
+                    .left()
+                    .growX()
+                    .wrap();
+            }).padTop(12f).padBottom(4f).left().growX();
+            table.row();
+        }
+    }
+
+    private static float prefWidth(){
+        return Math.min(Core.graphics.getWidth() / 1.2f, 560f);
+    }
+
+    private static class IconCheckSetting extends SettingsMenuDialog.SettingsTable.Setting{
+        private final boolean def;
+        private final Drawable icon;
+        private final Cons<Boolean> changed;
+
+        public IconCheckSetting(String name, boolean def, Drawable icon, Cons<Boolean> changed){
+            super(name);
+            this.def = def;
+            this.icon = icon;
+            this.changed = changed;
+        }
+
+        @Override
+        public void add(SettingsMenuDialog.SettingsTable table){
+            CheckBox box = new CheckBox(title);
+            box.getLabel().setWrap(true);
+            box.getLabelCell().growX().minWidth(0f);
+
+            box.update(() -> box.setChecked(Core.settings.getBool(name, def)));
+
+            box.changed(() -> {
+                Core.settings.put(name, box.isChecked());
+                if(changed != null) changed.get(box.isChecked());
+            });
+
+            table.table(Tex.button, t -> {
+                t.left().margin(10f);
+                if(icon != null) t.image(icon).size(20f).padRight(8f);
+                t.add(box).left().growX().minWidth(0f);
+            }).width(prefWidth()).left().padTop(6f);
+
+            addDesc(box);
+            table.row();
+        }
+    }
+
+    private static class IconSliderSetting extends SettingsMenuDialog.SettingsTable.Setting{
+        private final int def, min, max, step;
+        private final Drawable icon;
+        private final SettingsMenuDialog.StringProcessor sp;
+        private final arc.func.Intc changed;
+
+        public IconSliderSetting(String name, int def, int min, int max, int step, Drawable icon, SettingsMenuDialog.StringProcessor sp, arc.func.Intc changed){
+            super(name);
+            this.def = def;
+            this.min = min;
+            this.max = max;
+            this.step = step;
+            this.icon = icon;
+            this.sp = sp;
+            this.changed = changed;
+        }
+
+        @Override
+        public void add(SettingsMenuDialog.SettingsTable table){
+            Slider slider = new Slider(min, max, step, false);
+            slider.setValue(Core.settings.getInt(name, def));
+
+            Label value = new Label("", Styles.outlineLabel);
+            Table content = new Table();
+            content.left();
+            if(icon != null) content.image(icon).size(20f).padRight(8f);
+            content.add(title, Styles.outlineLabel).left().growX().minWidth(0f).wrap();
+            content.add(value).padLeft(10f).right();
+            content.margin(3f, 16f, 3f, 16f);
+            content.touchable = Touchable.disabled;
+
+            slider.changed(() -> {
+                int v = (int)slider.getValue();
+                Core.settings.put(name, v);
+                value.setText(sp == null ? String.valueOf(v) : sp.get(v));
+                if(changed != null) changed.get(v);
+            });
+
+            slider.change();
+
+            addDesc(table.stack(slider, content).width(prefWidth()).left().padTop(6f).get());
+            table.row();
+        }
+    }
+
+    private static class IconTextSetting extends SettingsMenuDialog.SettingsTable.Setting{
+        private final String def;
+        private final Drawable icon;
+        private final Cons<String> changed;
+
+        public IconTextSetting(String name, String def, Drawable icon, Cons<String> changed){
+            super(name);
+            this.def = def;
+            this.icon = icon;
+            this.changed = changed;
+        }
+
+        @Override
+        public void add(SettingsMenuDialog.SettingsTable table){
+            final TextField[] fieldRef = {null};
+            table.table(Tex.button, t -> {
+                t.left().margin(10f);
+                if(icon != null) t.image(icon).size(20f).padRight(8f);
+
+                t.add(title).left().growX().minWidth(0f).wrap();
+
+                TextField field = t.field(Core.settings.getString(name, def), text -> {
+                    Core.settings.put(name, text);
+                    if(changed != null) changed.get(text);
+                }).growX().minWidth(140f).get();
+
+                field.setMessageText(def);
+                fieldRef[0] = field;
+            }).width(prefWidth()).left().padTop(6f);
+
+            if(fieldRef[0] != null) addDesc(fieldRef[0]);
+            table.row();
+        }
     }
 
     private void onChatMessage(String message){
@@ -2699,6 +3049,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
     private static class ControlledCluster{
         final Seq<Unit> units;
+        final int key;
         final float x, y;
         final Unit moveUnit;
         final float speed;
@@ -2720,12 +3071,13 @@ public class StealthPathMod extends mindustry.mod.Mod{
         final float maxHitRadiusWorld;
         final float threatClearanceWorld;
 
-        ControlledCluster(Seq<Unit> units, float x, float y, Unit moveUnit, float speed, int threatMode, boolean moveFlying, boolean threatsAir, boolean threatsGround,
+        ControlledCluster(Seq<Unit> units, int key, float x, float y, Unit moveUnit, float speed, int threatMode, boolean moveFlying, boolean threatsAir, boolean threatsGround,
                           boolean hasGround, float minSpeedGround, float minHpGround,
                           boolean hasAir, float minSpeedAir, float minHpAir,
                           float leftX, float leftY, float rightX, float rightY, float topX, float topY, float bottomX, float bottomY,
                           float maxHitRadiusWorld, float threatClearanceWorld){
             this.units = units == null ? new Seq<>() : units;
+            this.key = key;
             this.x = x;
             this.y = y;
             this.moveUnit = moveUnit;
