@@ -2,7 +2,7 @@
 
 Calcule et dessine les chemins les plus sûrs / les moins dangereux en utilisant la portée des tourelles et unités ennemies.
 
-Version actuelle : `2.0.3`
+Version actuelle : `2.0.4`
 
 ## Utilisation
 
@@ -18,6 +18,7 @@ Version actuelle : `2.0.3`
 ### Modes automatiques
 
 - Utilise le centre du groupe d’unités (unités sélectionnées si présentes ; sinon votre unité) et détecte air/sol/mixte pour calculer un chemin avec le moins de dégâts (mode Y : tourelles + unités).
+- Si les unités sélectionnées sont séparées en plusieurs groupes avec un écart > 5 cases, il calcule et dessine un chemin pour chaque groupe séparément.
 - Cible via chat : envoyez `"<Attack>(x,y)"` dans le chat (x,y = coordonnées de case). Seul votre propre message est analysé (côté client).
 
 ### Modes

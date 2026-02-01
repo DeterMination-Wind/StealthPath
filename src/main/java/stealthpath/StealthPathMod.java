@@ -165,6 +165,8 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
     private static final Pattern coordPattern = Pattern.compile("\\((-?\\d+)\\s*,\\s*(-?\\d+)\\)");
 
+    private static final float autoClusterSplitTiles = 5f;
+
     public StealthPathMod(){
         Events.on(ClientLoadEvent.class, e -> {
             ensureDefaults();
@@ -193,6 +195,10 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
         Events.on(BlockBuildEndEvent.class, e -> invalidatePassableCache());
         Events.on(BlockDestroyEvent.class, e -> invalidatePassableCache());
+    }
+
+    private static float previewRefreshInterval(){
+        return Math.max(1f, Core.settings.getInt(keyPreviewRefresh, 6));
     }
 
     private void invalidatePassableCache(){
@@ -480,8 +486,8 @@ public class StealthPathMod extends mindustry.mod.Mod{
         // Only act when the player has an RTS selection; otherwise, let the default right-click behavior work.
         if(control == null || control.input == null || control.input.selectedUnits == null || !control.input.selectedUnits.any()) return;
 
-        ControlledCluster cluster = computeControlledCluster();
-        if(cluster == null) return;
+        Seq<ControlledCluster> clusters = computeControlledClusters();
+        if(clusters == null || clusters.isEmpty()) return;
 
         int goalX, goalY;
         if(autoMode == autoModeMouse){
@@ -493,19 +499,42 @@ public class StealthPathMod extends mindustry.mod.Mod{
             goalY = bufferedTargetY;
         }
 
-        float passClearance = cluster.maxHitRadiusWorld;
-        float threatClearance = cluster.threatClearanceWorld + autoThreatExtraPaddingTiles * tilesize;
-        ThreatMap map = buildThreatMap(cluster.moveUnit, true, cluster.moveFlying, cluster.threatsAir, cluster.threatsGround, passClearance, threatClearance);
-        ShiftedPath best = findBestShiftedClusterPath(cluster, map, goalX, goalY);
-        if(best == null || best.path == null || best.path.isEmpty()) return;
+        boolean movedAny = false;
+        float minHpGround = Float.POSITIVE_INFINITY;
+        float minHpAir = Float.POSITIVE_INFINITY;
+        float predictedMax = 0f;
 
-        issueRtsMoveAlongPath(cluster, best.path, map.width);
+        for(int i = 0; i < clusters.size; i++){
+            ControlledCluster cluster = clusters.get(i);
+            if(cluster == null) continue;
+
+            float passClearance = cluster.maxHitRadiusWorld;
+            float threatClearance = cluster.threatClearanceWorld + autoThreatExtraPaddingTiles * tilesize;
+            ThreatMap map = buildThreatMap(cluster.moveUnit, true, cluster.moveFlying, cluster.threatsAir, cluster.threatsGround, passClearance, threatClearance);
+            ShiftedPath best = findBestShiftedClusterPath(cluster, map, goalX, goalY);
+            if(best == null || best.path == null || best.path.isEmpty()) continue;
+
+            issueRtsMoveAlongPath(cluster, best.path, map.width);
+            movedAny = true;
+
+            if(cluster.hasGround && Float.isFinite(cluster.minHpGround)){
+                minHpGround = Math.min(minHpGround, cluster.minHpGround);
+            }
+            if(cluster.hasAir && Float.isFinite(cluster.minHpAir)){
+                minHpAir = Math.min(minHpAir, cluster.minHpAir);
+            }
+            if(Float.isFinite(best.maxDmg)){
+                predictedMax = Math.max(predictedMax, best.maxDmg);
+            }
+        }
+
+        if(!movedAny) return;
 
         autoMoveMonitorUntil = Float.POSITIVE_INFINITY;
-        autoMoveMonitorNextCheck = Time.time + 20f;
-        autoMoveMonitorMinHpGround = cluster.minHpGround;
-        autoMoveMonitorMinHpAir = cluster.minHpAir;
-        autoMoveMonitorPredictedMaxDmg = best.maxDmg;
+        autoMoveMonitorNextCheck = Time.time + previewRefreshInterval();
+        autoMoveMonitorMinHpGround = minHpGround == Float.POSITIVE_INFINITY ? Float.NaN : minHpGround;
+        autoMoveMonitorMinHpAir = minHpAir == Float.POSITIVE_INFINITY ? Float.NaN : minHpAir;
+        autoMoveMonitorPredictedMaxDmg = predictedMax;
     }
 
     private void autoMonitorUnexpectedDamage(){
@@ -518,31 +547,66 @@ public class StealthPathMod extends mindustry.mod.Mod{
         // monitor indefinitely while enabled
 
         if(Time.time < autoMoveMonitorNextCheck) return;
-        autoMoveMonitorNextCheck = Time.time + 20f;
+        autoMoveMonitorNextCheck = Time.time + previewRefreshInterval();
 
         if(autoMode == autoModeOff) return;
 
-        ControlledCluster cluster = computeControlledCluster();
-        if(cluster == null){
+        if(control == null || control.input == null || control.input.selectedUnits == null || !control.input.selectedUnits.any()){
             autoMoveMonitorUntil = 0f;
             return;
         }
 
-        boolean groundHit = cluster.hasGround
-            && Float.isFinite(autoMoveMonitorMinHpGround)
-            && Float.isFinite(cluster.minHpGround)
-            && cluster.minHpGround < autoMoveMonitorMinHpGround - 0.01f;
+        float curMinGround = Float.POSITIVE_INFINITY;
+        float curMinAir = Float.POSITIVE_INFINITY;
+        boolean hasGround = false;
+        boolean hasAir = false;
 
-        boolean airHit = cluster.hasAir
+        Unit playerUnit = player.unit();
+        Unit first = null;
+        int count = 0;
+
+        for(int i = 0; i < control.input.selectedUnits.size; i++){
+            Unit u = control.input.selectedUnits.get(i);
+            if(u == null) continue;
+            if(u.team != player.team()) continue;
+            if(!u.isAdded() || u.dead()) continue;
+
+            if(first == null) first = u;
+            count++;
+
+            float hp = u.health();
+            if(u.isFlying()){
+                hasAir = true;
+                curMinAir = Math.min(curMinAir, hp);
+            }else{
+                hasGround = true;
+                curMinGround = Math.min(curMinGround, hp);
+            }
+        }
+
+        if(count <= 0 || (count == 1 && first == playerUnit)){
+            autoMoveMonitorUntil = 0f;
+            return;
+        }
+
+        if(!hasGround) curMinGround = Float.NaN;
+        if(!hasAir) curMinAir = Float.NaN;
+
+        boolean groundHit = hasGround
+            && Float.isFinite(autoMoveMonitorMinHpGround)
+            && Float.isFinite(curMinGround)
+            && curMinGround < autoMoveMonitorMinHpGround - 0.01f;
+
+        boolean airHit = hasAir
             && Float.isFinite(autoMoveMonitorMinHpAir)
-            && Float.isFinite(cluster.minHpAir)
-            && cluster.minHpAir < autoMoveMonitorMinHpAir - 0.01f;
+            && Float.isFinite(curMinAir)
+            && curMinAir < autoMoveMonitorMinHpAir - 0.01f;
 
         if(!groundHit && !airHit) return;
 
         // Update baseline for future checks.
-        autoMoveMonitorMinHpGround = cluster.minHpGround;
-        autoMoveMonitorMinHpAir = cluster.minHpAir;
+        autoMoveMonitorMinHpGround = curMinGround;
+        autoMoveMonitorMinHpAir = curMinAir;
 
         // If the mod predicted a safe (0 damage) path but units still took damage, increase the safety padding.
         if(!(Float.isFinite(autoMoveMonitorPredictedMaxDmg) && autoMoveMonitorPredictedMaxDmg <= 0.0001f)) return;
@@ -560,15 +624,32 @@ public class StealthPathMod extends mindustry.mod.Mod{
             goalY = bufferedTargetY;
         }
 
-        float passClearance = cluster.maxHitRadiusWorld;
-        float threatClearance = cluster.threatClearanceWorld + autoThreatExtraPaddingTiles * tilesize;
-        ThreatMap map = buildThreatMap(cluster.moveUnit, true, cluster.moveFlying, cluster.threatsAir, cluster.threatsGround, passClearance, threatClearance);
-        ShiftedPath best = findBestShiftedClusterPath(cluster, map, goalX, goalY);
-        if(best == null || best.path == null || best.path.isEmpty()) return;
+        float predictedMax = 0f;
+        boolean issuedAny = false;
 
-        issueRtsMoveAlongPath(cluster, best.path, map.width);
+        Seq<ControlledCluster> clusters = computeControlledClusters();
+        if(clusters == null || clusters.isEmpty()) return;
 
-        autoMoveMonitorPredictedMaxDmg = best.maxDmg;
+        for(int i = 0; i < clusters.size; i++){
+            ControlledCluster cluster = clusters.get(i);
+            if(cluster == null) continue;
+
+            float passClearance = cluster.maxHitRadiusWorld;
+            float threatClearance = cluster.threatClearanceWorld + autoThreatExtraPaddingTiles * tilesize;
+            ThreatMap map = buildThreatMap(cluster.moveUnit, true, cluster.moveFlying, cluster.threatsAir, cluster.threatsGround, passClearance, threatClearance);
+            ShiftedPath best = findBestShiftedClusterPath(cluster, map, goalX, goalY);
+            if(best == null || best.path == null || best.path.isEmpty()) continue;
+
+            issueRtsMoveAlongPath(cluster, best.path, map.width);
+            issuedAny = true;
+            if(Float.isFinite(best.maxDmg)){
+                predictedMax = Math.max(predictedMax, best.maxDmg);
+            }
+        }
+
+        if(!issuedAny) return;
+
+        autoMoveMonitorPredictedMaxDmg = predictedMax;
         autoMoveMonitorUntil = Float.POSITIVE_INFINITY;
     }
 
@@ -605,11 +686,11 @@ public class StealthPathMod extends mindustry.mod.Mod{
         if(autoMode == autoModeOff) return;
         if(!state.isGame() || world == null || player == null) return;
 
-        float baseInterval = Math.max(1f, Core.settings.getInt(keyPreviewRefresh, 6));
+        float baseInterval = previewRefreshInterval();
         if(Time.time < autoNextCompute) return;
 
-        ControlledCluster cluster = computeControlledCluster();
-        if(cluster == null){
+        Seq<ControlledCluster> clusters = computeControlledClusters();
+        if(clusters == null || clusters.isEmpty()){
             if(Time.time >= autoNextNoUnitsToast){
                 showToast("@sp.toast.auto.no-units", 2.5f);
                 autoNextNoUnitsToast = Time.time + 90f;
@@ -631,29 +712,61 @@ public class StealthPathMod extends mindustry.mod.Mod{
             goalY = bufferedTargetY;
         }
 
-        int startX = worldToTile(cluster.x);
-        int startY = worldToTile(cluster.y);
-        int startPacked = startX + startY * world.width();
-
         int goalPacked = goalX + goalY * world.width();
-        boolean unchanged = startPacked == autoLastStartPacked && goalPacked == autoLastGoalPacked && cluster.threatMode == autoLastThreatMode;
 
-        float passClearance = cluster.maxHitRadiusWorld;
-        float threatClearance = cluster.threatClearanceWorld + autoThreatExtraPaddingTiles * tilesize;
-        ThreatMap map = buildThreatMap(cluster.moveUnit, true, cluster.moveFlying, cluster.threatsAir, cluster.threatsGround, passClearance, threatClearance);
-        computeClusterToGoal(cluster, map, goalX, goalY, false);
+        int startHash = 1;
+        int threatHash = 1;
+        for(int i = 0; i < clusters.size; i++){
+            ControlledCluster c = clusters.get(i);
+            if(c == null) continue;
+            int sx = clamp(worldToTile(c.x), 0, world.width() - 1);
+            int sy = clamp(worldToTile(c.y), 0, world.height() - 1);
+            startHash = 31 * startHash + (sx + sy * world.width());
+            threatHash = 31 * threatHash + c.threatMode;
+        }
+
+        startHash = 31 * startHash + clusters.size;
+        threatHash = 31 * threatHash + clusters.size;
+
+        boolean unchanged = startHash == autoLastStartPacked && goalPacked == autoLastGoalPacked && threatHash == autoLastThreatMode;
+
+        clearPaths();
+        float maxDmg = 0f;
+        boolean anyPath = false;
+
+        for(int i = 0; i < clusters.size; i++){
+            ControlledCluster cluster = clusters.get(i);
+            if(cluster == null) continue;
+
+            float passClearance = cluster.maxHitRadiusWorld;
+            float threatClearance = cluster.threatClearanceWorld + autoThreatExtraPaddingTiles * tilesize;
+            ThreatMap map = buildThreatMap(cluster.moveUnit, true, cluster.moveFlying, cluster.threatsAir, cluster.threatsGround, passClearance, threatClearance);
+            ShiftedPath sp = computeClusterToGoal(cluster, map, goalX, goalY, false);
+            if(sp == null || sp.path == null || sp.path.isEmpty()) continue;
+            anyPath = true;
+            if(Float.isFinite(sp.maxDmg)){
+                maxDmg = Math.max(maxDmg, sp.maxDmg);
+            }
+        }
+
+        if(!anyPath){
+            autoNextCompute = Time.time + baseInterval * 2f;
+            return;
+        }
+
+        lastDamage = maxDmg;
         drawUntil = Float.POSITIVE_INFINITY;
 
-        autoLastStartPacked = startPacked;
+        autoLastStartPacked = startHash;
         autoLastGoalPacked = goalPacked;
-        autoLastThreatMode = cluster.threatMode;
+        autoLastThreatMode = threatHash;
 
         // If the goal/start didn't move, slow down updates to reduce CPU usage.
         float slowInterval = Math.min(240f, baseInterval * 8f);
         autoNextCompute = Time.time + (unchanged ? slowInterval : baseInterval);
     }
 
-    private ControlledCluster computeControlledCluster(){
+    private Seq<ControlledCluster> computeControlledClusters(){
         if(player == null) return null;
         Unit playerUnit = player.unit();
         if(playerUnit == null) return null;
@@ -674,6 +787,67 @@ public class StealthPathMod extends mindustry.mod.Mod{
         if(tmpUnits.isEmpty()) return null;
         if(tmpUnits.size == 1 && tmpUnits.first() == playerUnit) return null;
 
+        float link = autoClusterSplitTiles * tilesize;
+        float link2 = link * link;
+
+        boolean[] used = new boolean[tmpUnits.size];
+        IntSeq queue = new IntSeq();
+
+        Seq<ControlledCluster> out = new Seq<>();
+
+        for(int i = 0; i < tmpUnits.size; i++){
+            if(used[i]) continue;
+
+            Seq<Unit> members = new Seq<>();
+            queue.clear();
+
+            used[i] = true;
+            queue.add(i);
+            members.add(tmpUnits.get(i));
+
+            // Flood-fill by proximity: connect units within 5 tiles into the same cluster.
+            for(int q = 0; q < queue.size; q++){
+                Unit a = tmpUnits.get(queue.items[q]);
+                if(a == null) continue;
+
+                for(int j = 0; j < tmpUnits.size; j++){
+                    if(used[j]) continue;
+
+                    Unit b = tmpUnits.get(j);
+                    if(b == null) continue;
+
+                    float dx = b.x - a.x;
+                    float dy = b.y - a.y;
+                    float d2 = dx * dx + dy * dy;
+                    if(d2 <= link2){
+                        used[j] = true;
+                        queue.add(j);
+                        members.add(b);
+                    }
+                }
+            }
+
+            if(members.size == 1 && members.first() == playerUnit){
+                // Ignore the player's own unit if it ends up being an isolated single-unit "cluster".
+                continue;
+            }
+
+            ControlledCluster cluster = buildControlledCluster(members);
+            if(cluster != null){
+                out.add(cluster);
+            }
+        }
+
+        if(out.isEmpty()) return null;
+
+        // Prefer drawing/moving larger clusters first.
+        out.sort((a, b) -> Integer.compare(b.units.size, a.units.size));
+        return out;
+    }
+
+    private static ControlledCluster buildControlledCluster(Seq<Unit> members){
+        if(members == null || members.isEmpty()) return null;
+
         float sx = 0f, sy = 0f;
         int flying = 0;
 
@@ -688,14 +862,16 @@ public class StealthPathMod extends mindustry.mod.Mod{
         float sumSqGround = 0f;
         float sumSqAir = 0f;
 
-        Unit first = tmpUnits.first();
+        Unit first = members.first();
         float leftX = first.x, leftY = first.y;
         float rightX = first.x, rightY = first.y;
         float topX = first.x, topY = first.y;
         float bottomX = first.x, bottomY = first.y;
 
-        for(int i = 0; i < tmpUnits.size; i++){
-            Unit u = tmpUnits.get(i);
+        for(int i = 0; i < members.size; i++){
+            Unit u = members.get(i);
+            if(u == null) continue;
+
             sx += u.x;
             sy += u.y;
 
@@ -733,8 +909,8 @@ public class StealthPathMod extends mindustry.mod.Mod{
             }
         }
 
-        float cx = sx / tmpUnits.size;
-        float cy = sy / tmpUnits.size;
+        float cx = sx / Math.max(1, members.size);
+        float cy = sy / Math.max(1, members.size);
 
         float formationGround = hasGround ? (float)Math.sqrt(Math.max(0f, sumSqGround)) : 0f;
         float formationAir = hasAir ? (float)Math.sqrt(Math.max(0f, sumSqAir)) : 0f;
@@ -749,7 +925,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
         boolean moveFlying;
         boolean threatsAir, threatsGround;
 
-        if(flying == tmpUnits.size){
+        if(flying == members.size){
             threatMode = threatModeAir;
             moveFlying = true;
             threatsAir = true;
@@ -768,8 +944,8 @@ public class StealthPathMod extends mindustry.mod.Mod{
         }
 
         Unit moveUnit = null;
-        for(int i = 0; i < tmpUnits.size; i++){
-            Unit u = tmpUnits.get(i);
+        for(int i = 0; i < members.size; i++){
+            Unit u = members.get(i);
             if(u == null) continue;
             if(moveUnit == null){
                 moveUnit = u;
@@ -778,6 +954,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
                 moveUnit = u;
             }
         }
+        if(moveUnit == null) return null;
 
         float moveSpeed;
         if(moveFlying){
@@ -791,7 +968,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
         if(!Float.isFinite(minSpeedAir)) minSpeedAir = Float.NaN;
         if(!Float.isFinite(minHpAir)) minHpAir = Float.NaN;
 
-        return new ControlledCluster(cx, cy, moveUnit, moveSpeed, threatMode, moveFlying, threatsAir, threatsGround,
+        return new ControlledCluster(members, cx, cy, moveUnit, moveSpeed, threatMode, moveFlying, threatsAir, threatsGround,
             hasGround, minSpeedGround, minHpGround,
             hasAir, minSpeedAir, minHpAir,
             leftX, leftY, rightX, rightY, topX, topY, bottomX, bottomY,
@@ -1286,13 +1463,13 @@ public class StealthPathMod extends mindustry.mod.Mod{
         if(showToasts) showToast(Core.bundle.format("sp.toast.path", result.path.size, Strings.autoFixed(lastDamage, 1)), 3f);
     }
 
-    private void computeClusterToGoal(ControlledCluster cluster, ThreatMap map, int goalX, int goalY, boolean showToasts){
-        clearPaths();
+    private ShiftedPath computeClusterToGoal(ControlledCluster cluster, ThreatMap map, int goalX, int goalY, boolean showToasts){
+        if(showToasts) clearPaths();
 
         ShiftedPath sp = findBestShiftedClusterPath(cluster, map, goalX, goalY);
         if(sp == null || sp.path == null || sp.path.isEmpty()){
             if(showToasts) showToast("@sp.toast.no-path", 2.5f);
-            return;
+            return null;
         }
 
         IntSeq compact = compactPath(sp.path, map.width);
@@ -1300,12 +1477,14 @@ public class StealthPathMod extends mindustry.mod.Mod{
         Color c = autoPathColor(cluster, sp.dmgGround, sp.dmgAir, sp.maxDmg);
         drawPaths.add(new RenderPath(toWorldPointsFromTilesWithStart(compact, map.width, cluster.x + sp.dx, cluster.y + sp.dy, null), c, sp.maxDmg));
 
-        lastDamage = sp.maxDmg;
+        if(showToasts){
+            lastDamage = sp.maxDmg;
+            int seconds = Core.settings.getInt(keyPathDuration, 10);
+            drawUntil = seconds <= 0 ? Float.POSITIVE_INFINITY : Time.time + seconds * 60f;
+            showToast(Core.bundle.format("sp.toast.path", sp.path.size, Strings.autoFixed(lastDamage, 1)), 3f);
+        }
 
-        int seconds = Core.settings.getInt(keyPathDuration, 10);
-        drawUntil = seconds <= 0 ? Float.POSITIVE_INFINITY : Time.time + seconds * 60f;
-
-        if(showToasts) showToast(Core.bundle.format("sp.toast.path", sp.path.size, Strings.autoFixed(lastDamage, 1)), 3f);
+        return sp;
     }
 
     private ShiftedPath findBestShiftedClusterPath(ControlledCluster cluster, ThreatMap map, int goalX, int goalY){
@@ -1411,10 +1590,11 @@ public class StealthPathMod extends mindustry.mod.Mod{
         if(tilePath == null || tilePath.isEmpty()) return;
         if(player == null || player.unit() == null) return;
         if(control == null || control.input == null || control.input.selectedUnits == null || !control.input.selectedUnits.any()) return;
+        if(cluster == null || cluster.units == null || cluster.units.isEmpty()) return;
 
         Seq<Unit> units = new Seq<>();
-        for(int i = 0; i < control.input.selectedUnits.size; i++){
-            Unit u = control.input.selectedUnits.get(i);
+        for(int i = 0; i < cluster.units.size; i++){
+            Unit u = cluster.units.get(i);
             if(u == null) continue;
             if(u.team != player.team()) continue;
             if(!u.isAdded() || u.dead()) continue;
@@ -2518,6 +2698,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
     }
 
     private static class ControlledCluster{
+        final Seq<Unit> units;
         final float x, y;
         final Unit moveUnit;
         final float speed;
@@ -2539,11 +2720,12 @@ public class StealthPathMod extends mindustry.mod.Mod{
         final float maxHitRadiusWorld;
         final float threatClearanceWorld;
 
-        ControlledCluster(float x, float y, Unit moveUnit, float speed, int threatMode, boolean moveFlying, boolean threatsAir, boolean threatsGround,
+        ControlledCluster(Seq<Unit> units, float x, float y, Unit moveUnit, float speed, int threatMode, boolean moveFlying, boolean threatsAir, boolean threatsGround,
                           boolean hasGround, float minSpeedGround, float minHpGround,
                           boolean hasAir, float minSpeedAir, float minHpAir,
                           float leftX, float leftY, float rightX, float rightY, float topX, float topY, float bottomX, float bottomY,
                           float maxHitRadiusWorld, float threatClearanceWorld){
+            this.units = units == null ? new Seq<>() : units;
             this.x = x;
             this.y = y;
             this.moveUnit = moveUnit;
