@@ -76,6 +76,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private static final String keyAutoColorDead = "sp-auto-color-dead";
     private static final String keyAutoColorWarn = "sp-auto-color-warn";
     private static final String keyAutoColorSafe = "sp-auto-color-safe";
+    private static final String keyAutoMoveEnabled = "sp-auto-move-enabled";
 
     private static final int targetModeCore = 0;
     private static final int targetModeNearest = 1;
@@ -103,6 +104,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private static KeyBind keybindThreatMode;
     private static KeyBind keybindAutoMouse;
     private static KeyBind keybindAutoAttack;
+    private static KeyBind keybindAutoMove;
 
     private final Seq<RenderPath> drawPaths = new Seq<>();
     private float drawUntil = 0f;
@@ -204,6 +206,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
         Core.settings.defaults(keyAutoColorDead, "ff3b30");
         Core.settings.defaults(keyAutoColorWarn, "ffd60a");
         Core.settings.defaults(keyAutoColorSafe, "34c759");
+        Core.settings.defaults(keyAutoMoveEnabled, true);
     }
 
     private void registerKeybinds(){
@@ -217,6 +220,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
         keybindThreatMode = KeyBind.add("sp_threat_cycle", KeyCode.l, "stealthpath");
         keybindAutoMouse = KeyBind.add("sp_auto_mouse", KeyCode.n, "stealthpath");
         keybindAutoAttack = KeyBind.add("sp_auto_attack", KeyCode.m, "stealthpath");
+        keybindAutoMove = KeyBind.add("sp_auto_move", KeyCode.mouseRight, "stealthpath");
     }
 
     private void registerSettings(){
@@ -235,6 +239,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
             table.textPref(keyAutoColorSafe, "34c759", v -> refreshAutoColors());
             table.textPref(keyAutoColorWarn, "ffd60a", v -> refreshAutoColors());
             table.textPref(keyAutoColorDead, "ff3b30", v -> refreshAutoColors());
+            table.checkPref(keyAutoMoveEnabled, true);
 
             table.row();
             table.sliderPref(keyGenClusterMaxPaths, 3, 1, 10, 1, v -> String.valueOf(v));
@@ -393,7 +398,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
             clearPaths();
         }
 
-        if(keybindTurrets == null || keybindAll == null || keybindModifier == null || keybindCycleMode == null || keybindThreatMode == null || keybindAutoMouse == null || keybindAutoAttack == null){
+        if(keybindTurrets == null || keybindAll == null || keybindModifier == null || keybindCycleMode == null || keybindThreatMode == null || keybindAutoMouse == null || keybindAutoAttack == null || keybindAutoMove == null){
             registerKeybinds();
         }
 
@@ -450,14 +455,16 @@ public class StealthPathMod extends mindustry.mod.Mod{
             computePath(true, true);
         }
 
-        autoHandleRightClickMove();
+        autoHandleAutoMoveKey();
         autoUpdate();
     }
 
-    private void autoHandleRightClickMove(){
+    private void autoHandleAutoMoveKey(){
         if(autoMode == autoModeOff) return;
         if(!state.isGame() || world == null || player == null) return;
-        if(!Core.input.keyTap(KeyCode.mouseRight)) return;
+        if(!Core.settings.getBool(keyAutoMoveEnabled, true)) return;
+        if(keybindAutoMove == null) return;
+        if(!Core.input.keyTap(keybindAutoMove)) return;
 
         // Only act when the player has an RTS selection; otherwise, let the default right-click behavior work.
         if(control == null || control.input == null || control.input.selectedUnits == null || !control.input.selectedUnits.any()) return;
