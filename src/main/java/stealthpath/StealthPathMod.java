@@ -18,6 +18,7 @@ import arc.scene.ui.TextButton;
 import arc.scene.ui.layout.Table;
 import arc.struct.IntSeq;
 import arc.struct.Seq;
+import arc.util.Align;
 import arc.util.Strings;
 import arc.util.Time;
 import mindustry.game.EventType.*;
@@ -29,6 +30,7 @@ import mindustry.gen.Unit;
 import mindustry.gen.Building;
 import mindustry.graphics.Layer;
 import mindustry.graphics.Pal;
+import mindustry.ui.Fonts;
 import mindustry.ui.Styles;
 import mindustry.ui.dialogs.BaseDialog;
 import mindustry.world.Tile;
@@ -726,6 +728,10 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
             Lines.stroke(stroke);
 
+            float prevFontScale = Fonts.outline.getScaleX();
+            float textScale = 0.6f / Math.max(0.0001f, renderer.getDisplayScale());
+            Fonts.outline.getData().setScale(textScale);
+
             for(int p = 0; p < drawPaths.size; p++){
                 RenderPath path = drawPaths.get(p);
                 if(path == null || path.points == null || path.points.isEmpty()) continue;
@@ -744,8 +750,19 @@ public class StealthPathMod extends mindustry.mod.Mod{
                 Pos end = pts.peek();
                 if(start != null) Fill.circle(start.x, start.y, stroke * 2.2f);
                 if(end != null) Fill.circle(end.x, end.y, stroke * 2.6f);
+
+                if(path.damageText != null){
+                    int labelIndex = Math.min(pts.size - 1, Math.max(0, pts.size / 2));
+                    Pos labelPos = pts.get(labelIndex);
+                    if(labelPos != null){
+                        float offset = Math.max(stroke * 10f, tilesize * 0.45f);
+                        Draw.color(path.color);
+                        Fonts.outline.draw(path.damageText, labelPos.x, labelPos.y + offset, Align.center);
+                    }
+                }
             }
 
+            Fonts.outline.getData().setScale(prevFontScale);
             Draw.reset();
         });
     }
@@ -829,8 +846,9 @@ public class StealthPathMod extends mindustry.mod.Mod{
         }
 
         IntSeq compact = compactPath(result.path, map.width);
-        drawPaths.add(new RenderPath(toWorldPoints(compact, map.width, unit, target), safe != null ? Pal.heal : Pal.remove));
-        lastDamage = estimateDamage(map, result.path, unit);
+        float dmg = estimateDamage(map, result.path, unit);
+        drawPaths.add(new RenderPath(toWorldPoints(compact, map.width, unit, target), safe != null ? Pal.heal : Pal.remove, dmg));
+        lastDamage = dmg;
 
         int seconds = Core.settings.getInt(keyPathDuration, 10);
         drawUntil = seconds <= 0 ? Float.POSITIVE_INFINITY : Time.time + seconds * 60f;
@@ -1028,7 +1046,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
                 ? toWorldPointsFromTilesWithStart(compact, map.width, startWorldX, startWorldY, cp.target)
                 : toWorldPointsFromTiles(compact, map.width, cp.target);
 
-            drawPaths.add(new RenderPath(points, genPathColor));
+            drawPaths.add(new RenderPath(points, genPathColor, dmg));
         }
 
         lastDamage = Float.isFinite(bestDamage) ? bestDamage : 0f;
@@ -1081,9 +1099,10 @@ public class StealthPathMod extends mindustry.mod.Mod{
         }
 
         IntSeq compact = compactPath(result.path, map.width);
-        drawPaths.add(new RenderPath(toWorldPointsFromTilesWithStart(compact, map.width, unit.x, unit.y, null), mousePathColor));
+        float dmg = estimateDamage(map, result.path, unit);
+        drawPaths.add(new RenderPath(toWorldPointsFromTilesWithStart(compact, map.width, unit.x, unit.y, null), mousePathColor, dmg));
 
-        lastDamage = estimateDamage(map, result.path, unit);
+        lastDamage = dmg;
 
         int seconds = Core.settings.getInt(keyPathDuration, 10);
         drawUntil = seconds <= 0 ? Float.POSITIVE_INFINITY : Time.time + seconds * 60f;
@@ -1144,7 +1163,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
         if(cluster.hasAir && Float.isFinite(dmgAir)) maxDmg = Math.max(maxDmg, dmgAir);
 
         Color c = autoPathColor(cluster, dmgGround, dmgAir, maxDmg);
-        drawPaths.add(new RenderPath(toWorldPointsFromTilesWithStart(compact, map.width, cluster.x, cluster.y, null), c));
+        drawPaths.add(new RenderPath(toWorldPointsFromTilesWithStart(compact, map.width, cluster.x, cluster.y, null), c, maxDmg));
 
         lastDamage = maxDmg;
 
@@ -1926,10 +1945,12 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private static class RenderPath{
         final Seq<Pos> points;
         final Color color;
+        final String damageText;
 
-        RenderPath(Seq<Pos> points, Color color){
+        RenderPath(Seq<Pos> points, Color color, float damage){
             this.points = points == null ? new Seq<Pos>() : points;
             this.color = color == null ? Color.white : color;
+            this.damageText = Float.isFinite(damage) ? Strings.autoFixed(Math.max(0f, damage), 1) : null;
         }
     }
 
