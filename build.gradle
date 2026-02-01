@@ -19,3 +19,16 @@ jar{
     // Use .zip extension for distribution.
     archiveFileName = "${project.name}.zip"
 }
+
+// Keep a copy at the repo root for easy install.
+tasks.register("copyZipToRoot", Copy){
+    // Root contains Gradle locks; disable state tracking to avoid snapshot failures.
+    doNotTrackState("Copies into root directory which may contain unreadable Gradle lock files.")
+    dependsOn tasks.named("jar")
+    from(tasks.named("jar").flatMap{ it.archiveFile })
+    into(rootDir)
+}
+
+tasks.named("jar").configure{
+    finalizedBy tasks.named("copyZipToRoot")
+}
