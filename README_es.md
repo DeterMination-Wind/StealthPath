@@ -2,7 +2,7 @@
 
 Calcula y dibuja rutas más seguras / de menor daño usando el alcance de torretas y unidades enemigas.
 
-Versión actual: `2.0.6`
+Versión actual: `2.0.7`
 
 ## Uso
 

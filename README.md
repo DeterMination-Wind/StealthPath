@@ -4,7 +4,7 @@ Compute and draw safest/lowest-damage paths using enemy turret/unit ranges.
 
 根据敌方炮塔/单位射程计算并绘制最安全/最少受伤路线。
 
-Current version / 当前版本: `2.0.6`
+Current version / 当前版本: `2.0.7`
 
 ## Other languages / 其他语言
 

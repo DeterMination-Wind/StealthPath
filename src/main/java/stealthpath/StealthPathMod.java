@@ -219,6 +219,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
             refreshMousePathColor();
             refreshAutoColors();
             registerTriggers();
+            GithubUpdateCheck.checkOnce();
         });
 
         Events.on(ClientChatEvent.class, e -> onChatMessage(e.message));
