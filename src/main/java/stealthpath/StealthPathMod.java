@@ -138,6 +138,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private int autoLastThreatMode = Integer.MIN_VALUE;
     private float autoNextCompute = 0f;
     private int autoThreatExtraPaddingTiles = 0;
+    private int autoMoveCommandId = 0;
 
     private float autoMoveMonitorUntil = 0f;
     private float autoMoveMonitorNextCheck = 0f;
@@ -498,9 +499,9 @@ public class StealthPathMod extends mindustry.mod.Mod{
         ShiftedPath best = findBestShiftedClusterPath(cluster, map, goalX, goalY);
         if(best == null || best.path == null || best.path.isEmpty()) return;
 
-        issueRtsMoveAlongPath(best.path, map.width);
+        issueRtsMoveAlongPath(cluster, best.path, map.width);
 
-        autoMoveMonitorUntil = Time.time + 5f * 60f;
+        autoMoveMonitorUntil = Float.POSITIVE_INFINITY;
         autoMoveMonitorNextCheck = Time.time + 20f;
         autoMoveMonitorMinHpGround = cluster.minHpGround;
         autoMoveMonitorMinHpAir = cluster.minHpAir;
@@ -514,11 +515,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
             return;
         }
 
-        if(Time.time > autoMoveMonitorUntil){
-            autoMoveMonitorUntil = 0f;
-            autoMoveMonitorPredictedMaxDmg = Float.NaN;
-            return;
-        }
+        // monitor indefinitely while enabled
 
         if(Time.time < autoMoveMonitorNextCheck) return;
         autoMoveMonitorNextCheck = Time.time + 20f;
@@ -569,10 +566,10 @@ public class StealthPathMod extends mindustry.mod.Mod{
         ShiftedPath best = findBestShiftedClusterPath(cluster, map, goalX, goalY);
         if(best == null || best.path == null || best.path.isEmpty()) return;
 
-        issueRtsMoveAlongPath(best.path, map.width);
+        issueRtsMoveAlongPath(cluster, best.path, map.width);
 
         autoMoveMonitorPredictedMaxDmg = best.maxDmg;
-        autoMoveMonitorUntil = Time.time + 5f * 60f;
+        autoMoveMonitorUntil = Float.POSITIVE_INFINITY;
     }
 
     private void toggleAutoMode(int requested){
@@ -583,6 +580,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
             clearPaths();
             autoThreatExtraPaddingTiles = 0;
             autoMoveMonitorUntil = 0f;
+            autoMoveCommandId++;
             showToast(requested == autoModeMouse ? "@sp.toast.auto.mouse.off" : "@sp.toast.auto.attack.off", 2.5f);
         }else{
             autoMode = requested;
@@ -593,6 +591,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
             drawUntil = Float.POSITIVE_INFINITY;
             autoThreatExtraPaddingTiles = 0;
             autoMoveMonitorUntil = 0f;
+            autoMoveCommandId++;
 
             if(autoMode == autoModeAttack && bufferedTargetPacked == -1){
                 showToast("@sp.toast.auto.attack.wait", 3f);
@@ -1358,10 +1357,21 @@ public class StealthPathMod extends mindustry.mod.Mod{
             if(cluster.hasGround && Float.isFinite(dmgGround)) maxDmg = Math.max(maxDmg, dmgGround);
             if(cluster.hasAir && Float.isFinite(dmgAir)) maxDmg = Math.max(maxDmg, dmgAir);
 
+            short minSafeDist = 0;
+            if(map.safeDist != null){
+                short min = Short.MAX_VALUE;
+                for(int s = 0; s < shifted.size; s++){
+                    int tidx = shifted.items[s];
+                    short d = map.safeDist[tidx];
+                    if(d < min) min = d;
+                }
+                minSafeDist = min == Short.MAX_VALUE ? 0 : min;
+            }
+
             if(best == null
                 || maxDmg + 0.0001f < best.maxDmg
-                || (Math.abs(maxDmg - best.maxDmg) <= 0.0001f && shifted.size < best.path.size)){
-                best = new ShiftedPath(shifted, dx, dy, dmgGround, dmgAir, maxDmg);
+                || (Math.abs(maxDmg - best.maxDmg) <= 0.0001f && (minSafeDist > best.minSafeDist || (minSafeDist == best.minSafeDist && shifted.size < best.path.size)))){
+                best = new ShiftedPath(shifted, dx, dy, dmgGround, dmgAir, maxDmg, minSafeDist);
             }
         }
 
@@ -1397,23 +1407,20 @@ public class StealthPathMod extends mindustry.mod.Mod{
         return out;
     }
 
-    private void issueRtsMoveAlongPath(IntSeq tilePath, int width){
+    private void issueRtsMoveAlongPath(ControlledCluster cluster, IntSeq tilePath, int width){
         if(tilePath == null || tilePath.isEmpty()) return;
         if(player == null || player.unit() == null) return;
         if(control == null || control.input == null || control.input.selectedUnits == null || !control.input.selectedUnits.any()) return;
 
-        int[] idsTmp = new int[control.input.selectedUnits.size];
-        int count = 0;
+        Seq<Unit> units = new Seq<>();
         for(int i = 0; i < control.input.selectedUnits.size; i++){
             Unit u = control.input.selectedUnits.get(i);
             if(u == null) continue;
             if(u.team != player.team()) continue;
             if(!u.isAdded() || u.dead()) continue;
-            idsTmp[count++] = u.id;
+            units.add(u);
         }
-        if(count <= 0) return;
-
-        int[] ids = Arrays.copyOf(idsTmp, count);
+        if(units.isEmpty()) return;
 
         IntSeq compact = compactPath(tilePath, width);
         if(compact.isEmpty()) compact = tilePath;
@@ -1439,9 +1446,65 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
         if(waypoints.isEmpty()) return;
 
-        for(int i = 0; i < waypoints.size; i++){
-            boolean queue = i != 0;
-            Call.commandUnits(player, ids, null, null, waypoints.get(i), queue, true);
+        // Cancel any delayed batches from a previous command.
+        int commandId = ++autoMoveCommandId;
+
+        // If the selected group is very large, stagger movement in a few batches.
+        // This helps keep the formation narrower so units don't drift into turret ranges while following the same path.
+        int count = units.size;
+        float formationTiles = cluster != null && Float.isFinite(cluster.threatClearanceWorld) ? (cluster.threatClearanceWorld / tilesize) : 0f;
+
+        int maxPerBatch;
+        float delayBetween;
+
+        if(count >= 24 || formationTiles >= 6f){
+            maxPerBatch = 8;
+            delayBetween = 45f;
+        }else if(count >= 16 || formationTiles >= 5f){
+            maxPerBatch = 10;
+            delayBetween = 35f;
+        }else if(count >= 12 || formationTiles >= 4f){
+            maxPerBatch = 12;
+            delayBetween = 25f;
+        }else{
+            maxPerBatch = count;
+            delayBetween = 0f;
+        }
+
+        int batches = Math.max(1, (count + maxPerBatch - 1) / maxPerBatch);
+
+        // Move bigger units first to reduce blocking in tight corridors.
+        if(batches > 1){
+            units.sort((a, b) -> Float.compare(b.hitSize, a.hitSize));
+        }
+
+        for(int b = 0; b < batches; b++){
+            int from = b * maxPerBatch;
+            int to = Math.min(count, from + maxPerBatch);
+            if(from >= to) break;
+
+            int[] ids = new int[to - from];
+            for(int i = from; i < to; i++){
+                ids[i - from] = units.get(i).id;
+            }
+
+            float delay = b * delayBetween;
+            if(delay <= 0.001f){
+                for(int i = 0; i < waypoints.size; i++){
+                    boolean queue = i != 0;
+                    Call.commandUnits(player, ids, null, null, waypoints.get(i), queue, true);
+                }
+            }else{
+                int[] batchIds = ids;
+                Time.run(delay, () -> {
+                    if(autoMoveCommandId != commandId) return;
+                    if(!state.isGame() || player == null) return;
+                    for(int i = 0; i < waypoints.size; i++){
+                        boolean queue = i != 0;
+                        Call.commandUnits(player, batchIds, null, null, waypoints.get(i), queue, true);
+                    }
+                });
+            }
         }
     }
 
@@ -1759,6 +1822,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
     private ThreatMap buildThreatMap(Unit unit, boolean includeUnits, boolean moveFlying, boolean threatsAir, boolean threatsGround, float passClearanceWorld, float threatClearanceWorld){
         ThreatMap map = new ThreatMap(world.width(), world.height());
+        map.safeBias = Mathf.clamp(threatClearanceWorld / tilesize, 0f, 10f);
 
         fillPassable(map, unit, moveFlying, passClearanceWorld);
         applyShieldNoGoZones(map, passClearanceWorld);
@@ -1798,7 +1862,71 @@ public class StealthPathMod extends mindustry.mod.Mod{
             }
         }
 
+        computeSafeDistance(map);
         return map;
+    }
+
+    private static void computeSafeDistance(ThreatMap map){
+        if(map == null || map.risk == null) return;
+
+        short[] dist = new short[map.size];
+        Arrays.fill(dist, (short)-1);
+
+        int[] queue = new int[map.size];
+        int head = 0, tail = 0;
+
+        for(int i = 0; i < map.size; i++){
+            if(map.risk[i] > 0.0001f){
+                dist[i] = 0;
+                queue[tail++] = i;
+            }
+        }
+
+        if(tail == 0){
+            map.safeDist = null;
+            return;
+        }
+
+        while(head < tail){
+            int idx = queue[head++];
+            short d = dist[idx];
+            int nd = d == Short.MAX_VALUE ? Short.MAX_VALUE : (d + 1);
+
+            int x = idx % map.width;
+            int y = idx / map.width;
+
+            // 4-neighbor expansion is enough for a "center of corridor" bias.
+            if(x > 0){
+                int n = idx - 1;
+                if(dist[n] == (short)-1){
+                    dist[n] = (short)nd;
+                    queue[tail++] = n;
+                }
+            }
+            if(x < map.width - 1){
+                int n = idx + 1;
+                if(dist[n] == (short)-1){
+                    dist[n] = (short)nd;
+                    queue[tail++] = n;
+                }
+            }
+            if(y > 0){
+                int n = idx - map.width;
+                if(dist[n] == (short)-1){
+                    dist[n] = (short)nd;
+                    queue[tail++] = n;
+                }
+            }
+            if(y < map.height - 1){
+                int n = idx + map.width;
+                if(dist[n] == (short)-1){
+                    dist[n] = (short)nd;
+                    queue[tail++] = n;
+                }
+            }
+        }
+
+        map.safeDist = dist;
     }
 
     private void applyShieldNoGoZones(ThreatMap map, float clearanceWorld){
@@ -2084,6 +2212,14 @@ public class StealthPathMod extends mindustry.mod.Mod{
                     float ng;
                     if(safeOnly){
                         ng = best[idx] + step;
+
+                        // Prefer the center of safe corridors (farther from risk zones) when multiple safe paths exist.
+                        if(map.safeDist != null && map.safeBias > 0.0001f){
+                            int sd = map.safeDist[nidx];
+                            // Larger safeDist => smaller penalty; bias scales with formation size.
+                            float centerBias = map.safeBias * 0.35f;
+                            ng += centerBias / (Math.max(0f, sd) + 1f);
+                        }
                     }else{
                         float distWorld = tilesize * step;
                         float avgRisk = (map.risk[idx] + map.risk[nidx]) * 0.5f;
@@ -2312,6 +2448,8 @@ public class StealthPathMod extends mindustry.mod.Mod{
         final int width, height, size;
         final boolean[] passable;
         final float[] risk;
+        short[] safeDist;
+        float safeBias;
 
         ThreatMap(int width, int height){
             this.width = width;
@@ -2366,14 +2504,16 @@ public class StealthPathMod extends mindustry.mod.Mod{
         final float dx, dy;
         final float dmgGround, dmgAir;
         final float maxDmg;
+        final short minSafeDist;
 
-        ShiftedPath(IntSeq path, float dx, float dy, float dmgGround, float dmgAir, float maxDmg){
+        ShiftedPath(IntSeq path, float dx, float dy, float dmgGround, float dmgAir, float maxDmg, short minSafeDist){
             this.path = path;
             this.dx = dx;
             this.dy = dy;
             this.dmgGround = dmgGround;
             this.dmgAir = dmgAir;
             this.maxDmg = maxDmg;
+            this.minSafeDist = minSafeDist;
         }
     }
 

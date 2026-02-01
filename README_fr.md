@@ -2,7 +2,7 @@
 
 Calcule et dessine les chemins les plus sûrs / les moins dangereux en utilisant la portée des tourelles et unités ennemies.
 
-Version actuelle : `2.0.0`
+Version actuelle : `2.0.3`
 
 ## Utilisation
 

@@ -4,7 +4,7 @@ Compute and draw safest/lowest-damage paths using enemy turret/unit ranges.
 
 根据敌方炮塔/单位射程计算并绘制最安全/最少受伤路线。
 
-Current version / 当前版本: `2.0.0`
+Current version / 当前版本: `2.0.3`
 
 ## Other languages / 其他语言
 
@@ -32,6 +32,8 @@ Current version / 当前版本: `2.0.0`
   长按 `X/Y` 仍是手动实时预览；自动模式刷新频率由 **设置 → 偷袭小道 → 预览刷新间隔** 控制。
 - Attack chat target format: send `"<Attack>(x,y)"` in chat (x,y are **tile coordinates**). Only your own sent message is parsed client-side.  
   攻击聊天目标格式：在聊天发送 `"<Attack>(x,y)"`（x,y 为**格子坐标**）；仅客户端解析你自己发出的消息。
+- Large selections may be moved in batches when you trigger auto-move to keep the formation tighter.  
+  选中单位过多时，触发自动移动会自动分批下达指令，以尽量保持队形更紧凑。
 
 ### Modes / 模式
 
