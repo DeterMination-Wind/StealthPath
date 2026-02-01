@@ -4,7 +4,7 @@ Compute and draw safest/lowest-damage paths using enemy turret/unit ranges.
 
 根据敌方炮塔/单位射程计算并绘制最安全/最少受伤路线。
 
-Current version / 当前版本: `2.0.5`
+Current version / 当前版本: `2.0.6`
 
 ## Other languages / 其他语言
 
@@ -54,6 +54,8 @@ Open: `Settings → Stealth Path` / `设置 → 偷袭小道`
 - Path display seconds / 路径显示秒数
 - Line width / 线条粗细
 - Live preview refresh interval / 预览刷新间隔（长按 X/Y 时）
+- Pro Mode / 专业模式：解锁“高级设置”二级菜单
+- Advanced settings / 高级设置（仅专业模式）：寻路/自动移动/缓存/发电集群等参数调节
 - Generator mode:
   - Path color / 路线颜色
   - Draw count / 同时绘制数量

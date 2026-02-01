@@ -68,6 +68,7 @@ import static mindustry.Vars.world;
 
 public class StealthPathMod extends mindustry.mod.Mod{
     private static final String keyEnabled = "sp-enabled";
+    private static final String keyProMode = "sp-pro-mode";
     private static final String keyTargetMode = "sp-target-mode";
     private static final String keyTargetBlock = "sp-target-block";
     private static final String keyPathDuration = "sp-path-duration";
@@ -94,6 +95,20 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private static final String keyAutoMoveEnabled = "sp-auto-move-enabled";
     private static final String keyAutoThreatPaddingMax = "sp-auto-threat-padding-max";
     private static final String keyShowToasts = "sp-show-toasts";
+    private static final String keyAutoClusterSplitTiles = "sp-auto-cluster-split-tiles";
+    private static final String keyFormationInflatePct = "sp-formation-inflate-pct";
+    private static final String keySafeCorridorBiasPct = "sp-safe-corridor-bias-pct";
+    private static final String keyComputeSafeDistance = "sp-compute-safe-distance";
+    private static final String keyRtsMaxWaypoints = "sp-rts-max-waypoints";
+    private static final String keyAutoBatchEnabled = "sp-auto-batch-enabled";
+    private static final String keyAutoBatchSizePct = "sp-auto-batch-size-pct";
+    private static final String keyAutoBatchDelayPct = "sp-auto-batch-delay-pct";
+    private static final String keyAutoSlowMultiplier = "sp-auto-slow-multiplier";
+    private static final String keyPassableCacheEntries = "sp-passable-cache-entries";
+    private static final String keyGenClusterLinkDistTiles = "sp-gencluster-linkdist-tiles";
+    private static final String keyGenClusterNearTurretDistTiles = "sp-gencluster-near-turret-dist-tiles";
+    private static final String keyGenClusterMinDrawTiles = "sp-gencluster-min-draw-tiles";
+    private static final String keyGenClusterFallbackBacktrackTiles = "sp-gencluster-fallback-backtrack-tiles";
 
     private static final int targetModeCore = 0;
     private static final int targetModeNearest = 1;
@@ -108,10 +123,10 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
     private static final String excludedGeneratorCombustion = "combustion-generator";
     private static final String excludedGeneratorTurbine = "turbine-condenser";
-    private static final int genClusterLinkDistTiles = 8;
-    private static final int genClusterNearTurretDistTiles = 12;
-    private static final int genClusterMinDrawTiles = 12;
-    private static final int genClusterFallbackBacktrackTiles = 16;
+    private static final int defaultGenClusterLinkDistTiles = 8;
+    private static final int defaultGenClusterNearTurretDistTiles = 12;
+    private static final int defaultGenClusterMinDrawTiles = 12;
+    private static final int defaultGenClusterFallbackBacktrackTiles = 16;
 
     private static boolean keybindsRegistered;
     private static KeyBind keybindTurrets;
@@ -180,16 +195,20 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private float autoNextNoUnitsToast = 0f;
 
     // Cached passability (expensive to recompute every frame).
-    private int passableCacheKey = Integer.MIN_VALUE;
-    private int passableCacheWidth = -1;
-    private int passableCacheHeight = -1;
-    private boolean[] passableCache;
+    private final arc.struct.IntMap<boolean[]> passableCacheByKey = new arc.struct.IntMap<>();
+    private final IntSeq passableCacheKeyOrder = new IntSeq();
     private int passableCacheRevision = 0;
     private int passableCacheUsedRevision = -1;
 
-    private static final Pattern coordPattern = Pattern.compile("\\((-?\\d+)\\s*,\\s*(-?\\d+)\\)");
+    // Scratch arrays for pathfinding (avoid allocating/filling map-sized arrays every search).
+    private float[] pathBest;
+    private int[] pathBestStamp;
+    private int[] pathParent;
+    private int[] pathClosedStamp;
+    private int pathStamp = 1;
+    private final PriorityQueue<Node> pathOpen = new PriorityQueue<>();
 
-    private static final float autoClusterSplitTiles = 5f;
+    private static final Pattern coordPattern = Pattern.compile("\\((-?\\d+)\\s*,\\s*(-?\\d+)\\)");
 
     public StealthPathMod(){
         Events.on(ClientLoadEvent.class, e -> {
@@ -231,12 +250,59 @@ public class StealthPathMod extends mindustry.mod.Mod{
         return Math.max(1f, Core.settings.getInt(keyPreviewRefresh, 6));
     }
 
+    private static int autoSlowMultiplier(){
+        return clamp(Core.settings.getInt(keyAutoSlowMultiplier, 8), 1, 60);
+    }
+
+    private static int rtsMaxWaypoints(){
+        return clamp(Core.settings.getInt(keyRtsMaxWaypoints, 12), 2, 80);
+    }
+
+    private static int autoClusterSplitTiles(){
+        return clamp(Core.settings.getInt(keyAutoClusterSplitTiles, 5), 1, 40);
+    }
+
+    private static float formationInflate(){
+        int pct = clamp(Core.settings.getInt(keyFormationInflatePct, 125), 100, 400);
+        return pct / 100f;
+    }
+
+    private static float safeCorridorBiasFactor(){
+        int pct = clamp(Core.settings.getInt(keySafeCorridorBiasPct, 35), 0, 400);
+        return pct / 100f;
+    }
+
+    private static boolean computeSafeDistanceEnabled(){
+        return Core.settings.getBool(keyComputeSafeDistance, true);
+    }
+
+    private static int passableCacheEntries(){
+        return clamp(Core.settings.getInt(keyPassableCacheEntries, 8), 1, 64);
+    }
+
+    private static int genClusterLinkDistTiles(){
+        return clamp(Core.settings.getInt(keyGenClusterLinkDistTiles, defaultGenClusterLinkDistTiles), 1, 40);
+    }
+
+    private static int genClusterNearTurretDistTiles(){
+        return clamp(Core.settings.getInt(keyGenClusterNearTurretDistTiles, defaultGenClusterNearTurretDistTiles), 1, 80);
+    }
+
+    private static int genClusterMinDrawTiles(){
+        return clamp(Core.settings.getInt(keyGenClusterMinDrawTiles, defaultGenClusterMinDrawTiles), 1, 200);
+    }
+
+    private static int genClusterFallbackBacktrackTiles(){
+        return clamp(Core.settings.getInt(keyGenClusterFallbackBacktrackTiles, defaultGenClusterFallbackBacktrackTiles), 0, 200);
+    }
+
     private void invalidatePassableCache(){
         passableCacheRevision++;
     }
 
     private void ensureDefaults(){
         Core.settings.defaults(keyEnabled, true);
+        Core.settings.defaults(keyProMode, false);
         Core.settings.defaults(keyTargetMode, targetModeCore);
         Core.settings.defaults(keyTargetBlock, "");
         Core.settings.defaults(keyPathDuration, 10);
@@ -263,6 +329,20 @@ public class StealthPathMod extends mindustry.mod.Mod{
         Core.settings.defaults(keyAutoMoveEnabled, true);
         Core.settings.defaults(keyAutoThreatPaddingMax, 6);
         Core.settings.defaults(keyShowToasts, true);
+        Core.settings.defaults(keyAutoClusterSplitTiles, 5);
+        Core.settings.defaults(keyFormationInflatePct, 125);
+        Core.settings.defaults(keySafeCorridorBiasPct, 35);
+        Core.settings.defaults(keyComputeSafeDistance, true);
+        Core.settings.defaults(keyRtsMaxWaypoints, 12);
+        Core.settings.defaults(keyAutoBatchEnabled, true);
+        Core.settings.defaults(keyAutoBatchSizePct, 100);
+        Core.settings.defaults(keyAutoBatchDelayPct, 100);
+        Core.settings.defaults(keyAutoSlowMultiplier, 8);
+        Core.settings.defaults(keyPassableCacheEntries, 8);
+        Core.settings.defaults(keyGenClusterLinkDistTiles, defaultGenClusterLinkDistTiles);
+        Core.settings.defaults(keyGenClusterNearTurretDistTiles, defaultGenClusterNearTurretDistTiles);
+        Core.settings.defaults(keyGenClusterMinDrawTiles, defaultGenClusterMinDrawTiles);
+        Core.settings.defaults(keyGenClusterFallbackBacktrackTiles, defaultGenClusterFallbackBacktrackTiles);
     }
 
     private void registerKeybinds(){
@@ -282,10 +362,12 @@ public class StealthPathMod extends mindustry.mod.Mod{
     private void registerSettings(){
         if(ui == null || ui.settings == null) return;
 
-        ui.settings.addCategory("@sp.category", table -> {
+        ui.settings.addCategory("@sp.category", Icon.map, table -> {
             table.pref(new HeaderSetting("@sp.section.general", Icon.settings));
             table.pref(new IconCheckSetting(keyEnabled, true, Icon.ok, null));
             table.pref(new IconCheckSetting(keyShowToasts, true, Icon.chat, null));
+            table.pref(new IconCheckSetting(keyProMode, false, Icon.settings, null));
+            addAdvancedSettingsRow(table);
             table.pref(new IconSliderSetting(keyPathDuration, 10, 0, 60, 5, Icon.info, v -> v == 0 ? "inf" : v + "s", null));
             table.pref(new IconSliderSetting(keyPathWidth, 2, 1, 6, 1, Icon.resize, v -> String.valueOf(v), null));
             table.pref(new IconSliderSetting(keyPathAlpha, 85, 0, 100, 5, Icon.image, v -> v + "%", null));
@@ -319,6 +401,69 @@ public class StealthPathMod extends mindustry.mod.Mod{
             addThreatModeRow(table);
             addTargetRow(table);
         });
+    }
+
+    private void addAdvancedSettingsRow(Table table){
+        table.table(Tex.button, t -> {
+            t.left().margin(10f);
+            t.image(Icon.settings).size(20f).padRight(8f);
+            t.add("@sp.setting.advanced.menu").left().width(170f);
+
+            TextButton open = t.button("@sp.setting.advanced.open", Styles.flatt, this::showAdvancedSettingsDialog)
+                .growX()
+                .height(40f)
+                .padLeft(8f)
+                .get();
+
+            open.update(() -> {
+                boolean pro = Core.settings.getBool(keyProMode, false);
+                open.setDisabled(!pro);
+                open.setText(pro ? Core.bundle.get("sp.setting.advanced.open") : Core.bundle.get("sp.setting.advanced.locked"));
+            });
+        }).width(prefWidth()).left().padTop(6f);
+
+        table.row();
+    }
+
+    private void showAdvancedSettingsDialog(){
+        if(!Core.settings.getBool(keyProMode, false)){
+            showToast("@sp.toast.pro-required", 2f);
+            return;
+        }
+
+        BaseDialog dialog = new BaseDialog("@sp.advanced.title");
+        dialog.addCloseButton();
+
+        SettingsMenuDialog.SettingsTable table = new SettingsMenuDialog.SettingsTable();
+
+        table.pref(new HeaderSetting("@sp.section.advanced.pathfinding", Icon.modeAttack));
+        table.pref(new IconSliderSetting(keyAutoClusterSplitTiles, 5, 1, 30, 1, Icon.filter, v -> v + " tiles", null));
+        table.pref(new IconSliderSetting(keyFormationInflatePct, 125, 100, 300, 5, Icon.resize, v -> v + "%", null));
+        table.pref(new IconSliderSetting(keySafeCorridorBiasPct, 35, 0, 200, 5, Icon.info, v -> v + "%", null));
+        table.pref(new IconCheckSetting(keyComputeSafeDistance, true, Icon.grid, null));
+
+        table.pref(new HeaderSetting("@sp.section.advanced.automove", Icon.commandRally));
+        table.pref(new IconSliderSetting(keyRtsMaxWaypoints, 12, 2, 60, 1, Icon.list, v -> String.valueOf(v), null));
+        table.pref(new IconCheckSetting(keyAutoBatchEnabled, true, Icon.commandRally, null));
+        table.pref(new IconSliderSetting(keyAutoBatchSizePct, 100, 50, 200, 10, Icon.resize, v -> v + "%", null));
+        table.pref(new IconSliderSetting(keyAutoBatchDelayPct, 100, 0, 200, 10, Icon.refresh, v -> v + "%", null));
+        table.pref(new IconSliderSetting(keyAutoSlowMultiplier, 8, 1, 30, 1, Icon.refresh, v -> v + "x", null));
+
+        table.pref(new HeaderSetting("@sp.section.advanced.cache", Icon.info));
+        table.pref(new IconSliderSetting(keyPassableCacheEntries, 8, 1, 24, 1, Icon.info, v -> String.valueOf(v), v -> invalidatePassableCache()));
+
+        table.pref(new HeaderSetting("@sp.section.advanced.gencluster", Icon.power));
+        table.pref(new IconSliderSetting(keyGenClusterLinkDistTiles, defaultGenClusterLinkDistTiles, 1, 20, 1, Icon.list, v -> v + " tiles", null));
+        table.pref(new IconSliderSetting(keyGenClusterNearTurretDistTiles, defaultGenClusterNearTurretDistTiles, 1, 40, 1, Icon.warning, v -> v + " tiles", null));
+        table.pref(new IconSliderSetting(keyGenClusterMinDrawTiles, defaultGenClusterMinDrawTiles, 1, 60, 1, Icon.info, v -> v + " tiles", null));
+        table.pref(new IconSliderSetting(keyGenClusterFallbackBacktrackTiles, defaultGenClusterFallbackBacktrackTiles, 0, 60, 1, Icon.refresh, v -> v + " tiles", null));
+
+        ScrollPane pane = new ScrollPane(table);
+        pane.setScrollingDisabled(true, false);
+        pane.setFadeScrollBars(false);
+
+        dialog.cont.add(pane).grow().minHeight(420f);
+        dialog.show();
     }
 
     private void addThreatModeRow(Table table){
@@ -901,7 +1046,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
         autoLastThreatMode = threatHash;
 
         // If the goal/start didn't move, slow down updates to reduce CPU usage.
-        float slowInterval = Math.min(240f, baseInterval * 8f);
+        float slowInterval = Math.min(240f, baseInterval * autoSlowMultiplier());
         autoNextCompute = Time.time + (autoMoveFollow ? baseInterval : (unchanged ? slowInterval : baseInterval));
     }
 
@@ -926,7 +1071,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
         if(tmpUnits.isEmpty()) return null;
         if(tmpUnits.size == 1 && tmpUnits.first() == playerUnit) return null;
 
-        float link = autoClusterSplitTiles * tilesize;
+        float link = autoClusterSplitTiles() * tilesize;
         float link2 = link * link;
 
         boolean[] used = new boolean[tmpUnits.size];
@@ -1059,7 +1204,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
         // Approximate formation collision "radius" from total collision area.
         // This helps keep every unit in the group away from turret boundaries, not just the center point.
-        float threatClearanceWorld = Math.max(maxHitRadiusWorld, formation * 1.25f);
+        float threatClearanceWorld = Math.max(maxHitRadiusWorld, formation * formationInflate());
         if(!Float.isFinite(threatClearanceWorld)) threatClearanceWorld = maxHitRadiusWorld;
 
         int threatMode;
@@ -1782,7 +1927,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
         IntSeq compact = compactPath(tilePath, width);
         if(compact.isEmpty()) compact = tilePath;
 
-        int maxWaypoints = 12;
+        int maxWaypoints = rtsMaxWaypoints();
         int step = Math.max(1, compact.size / maxWaypoints);
 
         Seq<Vec2> waypoints = new Seq<>();
@@ -1816,18 +1961,35 @@ public class StealthPathMod extends mindustry.mod.Mod{
         int maxPerBatch;
         float delayBetween;
 
-        if(count >= 24 || formationTiles >= 6f){
-            maxPerBatch = 8;
-            delayBetween = 45f;
-        }else if(count >= 16 || formationTiles >= 5f){
-            maxPerBatch = 10;
-            delayBetween = 35f;
-        }else if(count >= 12 || formationTiles >= 4f){
-            maxPerBatch = 12;
-            delayBetween = 25f;
-        }else{
+        boolean batching = Core.settings.getBool(keyAutoBatchEnabled, true);
+        if(!batching){
             maxPerBatch = count;
             delayBetween = 0f;
+        }else{
+            if(count >= 24 || formationTiles >= 6f){
+                maxPerBatch = 8;
+                delayBetween = 45f;
+            }else if(count >= 16 || formationTiles >= 5f){
+                maxPerBatch = 10;
+                delayBetween = 35f;
+            }else if(count >= 12 || formationTiles >= 4f){
+                maxPerBatch = 12;
+                delayBetween = 25f;
+            }else{
+                maxPerBatch = count;
+                delayBetween = 0f;
+            }
+
+            float sizeScale = clamp(Core.settings.getInt(keyAutoBatchSizePct, 100), 10, 500) / 100f;
+            float delayScale = clamp(Core.settings.getInt(keyAutoBatchDelayPct, 100), 0, 500) / 100f;
+
+            maxPerBatch = Math.max(1, Math.round(maxPerBatch * sizeScale));
+            delayBetween *= delayScale;
+
+            if(maxPerBatch >= count){
+                maxPerBatch = count;
+                delayBetween = 0f;
+            }
         }
 
         int batches = Math.max(1, (count + maxPerBatch - 1) / maxPerBatch);
@@ -1923,7 +2085,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
         if(gens.isEmpty()) return clusters;
 
         boolean[] visited = new boolean[gens.size];
-        float maxDst2 = tilesize * genClusterLinkDistTiles;
+        float maxDst2 = tilesize * genClusterLinkDistTiles();
         maxDst2 *= maxDst2;
 
         for(int i = 0; i < gens.size; i++){
@@ -2030,7 +2192,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
         if(path == null || path.isEmpty()) return 0;
         if(turrets == null || turrets.isEmpty()) return 0;
 
-        float near = tilesize * genClusterNearTurretDistTiles;
+        float near = tilesize * genClusterNearTurretDistTiles();
         float near2 = near * near;
 
         int earliestNear = -1;
@@ -2062,9 +2224,9 @@ public class StealthPathMod extends mindustry.mod.Mod{
             }
         }
 
-        int start = earliestNear != -1 ? earliestNear : Math.max(0, closestIndex - genClusterFallbackBacktrackTiles);
+        int start = earliestNear != -1 ? earliestNear : Math.max(0, closestIndex - genClusterFallbackBacktrackTiles());
 
-        int minLen = Math.min(genClusterMinDrawTiles, path.size);
+        int minLen = Math.min(genClusterMinDrawTiles(), path.size);
         if(path.size - start < minLen){
             start = Math.max(0, path.size - minLen);
         }
@@ -2223,7 +2385,11 @@ public class StealthPathMod extends mindustry.mod.Mod{
             }
         }
 
-        computeSafeDistance(map);
+        if(computeSafeDistanceEnabled()){
+            computeSafeDistance(map);
+        }else{
+            map.safeDist = null;
+        }
         return map;
     }
 
@@ -2342,6 +2508,12 @@ public class StealthPathMod extends mindustry.mod.Mod{
             return;
         }
 
+        if(passableCacheUsedRevision != passableCacheRevision){
+            passableCacheByKey.clear();
+            passableCacheKeyOrder.clear();
+            passableCacheUsedRevision = passableCacheRevision;
+        }
+
         int clearanceTiles = clearanceTiles(clearanceWorld);
 
         int key = unit.type.id;
@@ -2351,20 +2523,13 @@ public class StealthPathMod extends mindustry.mod.Mod{
         key = key * 31 + map.width;
         key = key * 31 + map.height;
 
-        boolean canUseCache = passableCache != null
-            && passableCacheKey == key
-            && passableCacheWidth == map.width
-            && passableCacheHeight == map.height
-            && passableCacheUsedRevision == passableCacheRevision;
-
-        if(canUseCache){
-            System.arraycopy(passableCache, 0, map.passable, 0, map.size);
+        boolean[] cached = passableCacheByKey.get(key);
+        if(cached != null && cached.length == map.size){
+            System.arraycopy(cached, 0, map.passable, 0, map.size);
             return;
         }
 
-        if(passableCache == null || passableCache.length != map.size){
-            passableCache = new boolean[map.size];
-        }
+        boolean[] computed = new boolean[map.size];
 
         for(int y = 0; y < map.height; y++){
             for(int x = 0; x < map.width; x++){
@@ -2386,15 +2551,20 @@ public class StealthPathMod extends mindustry.mod.Mod{
                         }
                     }
                 }
-                map.passable[idx] = p;
-                passableCache[idx] = p;
+                computed[idx] = p;
             }
         }
 
-        passableCacheKey = key;
-        passableCacheWidth = map.width;
-        passableCacheHeight = map.height;
-        passableCacheUsedRevision = passableCacheRevision;
+        passableCacheByKey.put(key, computed);
+        passableCacheKeyOrder.add(key);
+
+        int maxEntries = passableCacheEntries();
+        while(passableCacheKeyOrder.size > maxEntries){
+            int dropKey = passableCacheKeyOrder.removeIndex(0);
+            passableCacheByKey.remove(dropKey);
+        }
+
+        System.arraycopy(computed, 0, map.passable, 0, map.size);
     }
 
     private static int clearanceTiles(float clearanceWorld){
@@ -2517,32 +2687,50 @@ public class StealthPathMod extends mindustry.mod.Mod{
         return Math.max(min, Math.min(max, value));
     }
 
-    private static PathResult findPath(ThreatMap map, int startX, int startY, IntSeq goals, boolean[] goalMask, boolean safeOnly, float speed){
+    private void ensurePathScratch(int size){
+        if(pathBest == null || pathBest.length != size){
+            pathBest = new float[size];
+            pathBestStamp = new int[size];
+            pathParent = new int[size];
+            pathClosedStamp = new int[size];
+        }
+    }
+
+    private int nextPathStamp(){
+        pathStamp++;
+        if(pathStamp == Integer.MAX_VALUE){
+            if(pathBestStamp != null) Arrays.fill(pathBestStamp, 0);
+            if(pathClosedStamp != null) Arrays.fill(pathClosedStamp, 0);
+            pathStamp = 1;
+        }
+        return pathStamp;
+    }
+
+    private PathResult findPath(ThreatMap map, int startX, int startY, IntSeq goals, boolean[] goalMask, boolean safeOnly, float speed){
         int startIdx = startX + startY * map.width;
         if(!map.passable[startIdx]) return null;
         if(safeOnly && map.risk[startIdx] > 0.0001f) return null;
 
-        float[] best = new float[map.size];
-        Arrays.fill(best, Float.POSITIVE_INFINITY);
-        int[] parent = new int[map.size];
-        Arrays.fill(parent, -1);
-        boolean[] closed = new boolean[map.size];
+        ensurePathScratch(map.size);
+        int stamp = nextPathStamp();
 
-        PriorityQueue<Node> open = new PriorityQueue<>();
+        pathOpen.clear();
 
-        best[startIdx] = 0f;
-        open.add(new Node(startIdx, heuristic(map, startX, startY, goals, safeOnly), 0f));
+        pathBestStamp[startIdx] = stamp;
+        pathBest[startIdx] = 0f;
+        pathParent[startIdx] = -1;
+        pathOpen.add(new Node(startIdx, heuristic(map, startX, startY, goals, safeOnly), 0f));
 
-        while(!open.isEmpty()){
-            Node cur = open.poll();
+        while(!pathOpen.isEmpty()){
+            Node cur = pathOpen.poll();
             int idx = cur.idx;
 
-            if(closed[idx]) continue;
-            if(cur.g != best[idx]) continue;
-            closed[idx] = true;
+            if(pathClosedStamp[idx] == stamp) continue;
+            if(pathBestStamp[idx] != stamp || cur.g != pathBest[idx]) continue;
+            pathClosedStamp[idx] = stamp;
 
             if(goalMask[idx]){
-                return new PathResult(reconstruct(parent, idx));
+                return new PathResult(reconstruct(pathParent, idx));
             }
 
             int x = idx % map.width;
@@ -2556,7 +2744,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
                     if(nx < 0 || ny < 0 || nx >= map.width || ny >= map.height) continue;
 
                     int nidx = nx + ny * map.width;
-                    if(closed[nidx]) continue;
+                    if(pathClosedStamp[nidx] == stamp) continue;
                     if(!map.passable[nidx]) continue;
                     if(safeOnly && map.risk[nidx] > 0.0001f) continue;
 
@@ -2572,13 +2760,13 @@ public class StealthPathMod extends mindustry.mod.Mod{
 
                     float ng;
                     if(safeOnly){
-                        ng = best[idx] + step;
+                        ng = pathBest[idx] + step;
 
                         // Prefer the center of safe corridors (farther from risk zones) when multiple safe paths exist.
                         if(map.safeDist != null && map.safeBias > 0.0001f){
                             int sd = map.safeDist[nidx];
                             // Larger safeDist => smaller penalty; bias scales with formation size.
-                            float centerBias = map.safeBias * 0.35f;
+                            float centerBias = map.safeBias * safeCorridorBiasFactor();
                             ng += centerBias / (Math.max(0f, sd) + 1f);
                         }
                     }else{
@@ -2589,16 +2777,18 @@ public class StealthPathMod extends mindustry.mod.Mod{
                         // damage = DPS * seconds; seconds = dist / (speed * 60).
                         float dmg = avgRisk * (distWorld / (v * 60f));
                         float tie = step * 0.001f;
-                        ng = best[idx] + dmg + tie;
+                        ng = pathBest[idx] + dmg + tie;
                     }
 
-                    if(ng >= best[nidx]) continue;
+                    float prev = (pathBestStamp[nidx] == stamp) ? pathBest[nidx] : Float.POSITIVE_INFINITY;
+                    if(ng >= prev) continue;
 
-                    best[nidx] = ng;
-                    parent[nidx] = idx;
+                    pathBestStamp[nidx] = stamp;
+                    pathBest[nidx] = ng;
+                    pathParent[nidx] = idx;
 
                     float h = heuristic(map, nx, ny, goals, safeOnly);
-                    open.add(new Node(nidx, ng + h, ng));
+                    pathOpen.add(new Node(nidx, ng + h, ng));
                 }
             }
         }
@@ -2672,7 +2862,7 @@ public class StealthPathMod extends mindustry.mod.Mod{
         IntSeq compact = compactPath(tilePath, width);
         if(compact == null || compact.isEmpty()) compact = tilePath;
 
-        int maxWaypoints = 12;
+        int maxWaypoints = rtsMaxWaypoints();
         int step = Math.max(1, compact.size / maxWaypoints);
 
         int h = 1;

@@ -2,7 +2,7 @@
 
 Calcula y dibuja rutas más seguras / de menor daño usando el alcance de torretas y unidades enemigas.
 
-Versión actual: `2.0.5`
+Versión actual: `2.0.6`
 
 ## Uso
 
@@ -18,7 +18,7 @@ Versión actual: `2.0.5`
 ### Modos automáticos
 
 - Usa el centro del grupo de unidades (las unidades seleccionadas si existen; si no, tu unidad actual) y detecta aire/tierra/mixto para calcular una ruta de menor daño (modo Y: torretas + unidades).
-- Si las unidades seleccionadas están separadas en varios grupos con distancia > 5 casillas, calcula y dibuja una ruta para cada grupo por separado.
+- Si las unidades seleccionadas están separadas en varios grupos con una distancia mayor que el umbral configurado (por defecto 5 casillas), calcula y dibuja una ruta para cada grupo por separado.
 - Mientras sigue una orden de movimiento automático, el mod actualiza los puntos RTS cuando cambia la mejor ruta (por ejemplo, si una torreta empieza a disparar).
 - Objetivo por chat: envía `"<Attack>(x,y)"` en el chat (x,y son coordenadas de casilla). Solo se analiza tu propio mensaje (cliente).
 
@@ -37,6 +37,8 @@ Abrir: `Settings → Stealth Path`
 - Segundos de visualización de la ruta
 - Grosor de línea
 - Intervalo de actualización de vista previa (al mantener X/Y)
+- Modo Pro: desbloquea el menú de ajustes avanzados
+- Ajustes avanzados (Modo Pro): parámetros de búsqueda de ruta/movimiento automático/caché/grupos de generadores
 - Modo de generadores: color, cantidad, tamaño mínimo, iniciar desde el jugador
 - Modo jugador->ratón: color
 
