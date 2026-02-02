@@ -1,5 +1,11 @@
 # Stealth Path / 偷袭小道 (Mindustry Mod)
 
+## 反馈 / Feedback
+
+【BEK辅助mod反馈群】：https://qm.qq.com/q/cZWzPa4cTu
+
+![BEK辅助mod反馈群二维码](docs/bek-feedback-group.png)
+
 Compute and draw safest/lowest-damage paths using enemy turret/unit ranges.
 
 根据敌方炮塔/单位射程计算并绘制最安全/最少受伤路线。
