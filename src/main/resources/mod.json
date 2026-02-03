@@ -3,7 +3,7 @@
   "displayName": "Stealth Path / 偷袭小道",
   "author": "DeterMination",
   "description": "Compute and draw safest/lowest-damage paths using enemy turret/unit ranges. / 根据敌方炮塔/单位射程计算并绘制最安全/最少受伤路线。",
-  "version": "2.0.11",
+  "version": "3.0.1",
   "minGameVersion": "154",
   "hidden": true,
   "java": true,
