@@ -27,4 +27,5 @@ jobs:
           tag: ${{ steps.vars.outputs.tag }}
           name: Main build ${{ steps.vars.outputs.tag }}
           allowUpdates: false
+          bodyFile: RELEASE_NOTES.md
           artifacts: dist/stealth-path.zip
