@@ -3,7 +3,7 @@ plugins{
 }
 
 group = "stealthpath"
-version = "4.1.2"
+version = "4.1.3"
 
 repositories{
     mavenCentral()
@@ -51,7 +51,18 @@ tasks.register("copyZipToDist", Copy){
     doNotTrackState("Copying into dist is a convenience step; state tracking is unnecessary here.")
 }
 
+// Keep a copy in workspace root "构建/" for archiving.
+tasks.register("copyZipToBuildFolder", Copy){
+    dependsOn tasks.named("jar")
+    mustRunAfter tasks.named("copyZipToDist")
+    from(tasks.named("jar").flatMap{ it.archiveFile })
+    into(new File(rootDir.parentFile, "构建"))
+    rename{ _ -> "${project.name}-${project.version}.zip" }
+    doNotTrackState("Copying into workspace build folder is a convenience step; state tracking is unnecessary here.")
+}
+
 tasks.named("jar").configure{
     finalizedBy tasks.named("copyZipToRoot")
     finalizedBy tasks.named("copyZipToDist")
+    finalizedBy tasks.named("copyZipToBuildFolder")
 }
