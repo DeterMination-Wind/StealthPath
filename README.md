@@ -83,3 +83,17 @@ Run from the `Mindustry-master` repo root:
 ```
 
 Output zip: `mods/stealth-path/build/libs/stealth-path.zip`
+
+## Android / 安卓
+
+Android requires a mod package that contains `classes.dex`. Download `stealth-path-android.jar` from Releases and put it into Mindustry's `mods` folder.
+
+安卓端需要包含 `classes.dex` 的 mod 包。请下载 Release 中的 `stealth-path-android.jar` 并放入 Mindustry 的 `mods` 目录。
+
+Local build (from this repo root) / 本仓库本地构建：
+
+```powershell
+./gradlew.bat jarAndroid
+```
+
+Output / 输出：`dist/stealth-path-android.jar`

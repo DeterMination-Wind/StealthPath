@@ -14,6 +14,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android build-tools (for d8)
+        run: sdkmanager "build-tools;34.0.0"
+
+      - name: Build
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon clean jar jarAndroid copyAndroidJarToDist
+
       - name: Compute tag
         id: vars
         shell: bash
@@ -28,4 +48,4 @@ jobs:
           name: Main build ${{ steps.vars.outputs.tag }}
           allowUpdates: false
           bodyFile: RELEASE_NOTES.md
-          artifacts: dist/stealth-path.zip
+          artifacts: dist/stealth-path.zip,dist/stealth-path-android.jar
