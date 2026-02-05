@@ -26,18 +26,18 @@
 
 - `dist/stealth-path.zip`
 
-## 3. 与 BEK-Tools 同步（维护者）
+## 3. 与 Neon 同步（维护者）
 
-BEK-Tools 使用 `tools/update_submods.py` 读取本地 git checkout 的 HEAD 并合并源码：
+Neon 使用 `tools/update_submods.py` 读取本地 git checkout 的 HEAD 并合并源码：
 
 ```powershell
-cd ..\\BEK-Tools
+cd ..\\Neon
 python tools/update_submods.py
 ```
 
 同步后建议：
 
-1) 更新 BEK-Tools 版本号（`build.gradle`、`src/main/resources/mod.json`，以及 README 的 StealthPath 当前版本行）
+1) 更新 Neon 版本号（`build.gradle`、`src/main/resources/mod.json`，以及 README 的 StealthPath 当前版本行）
 2) 构建验证：`./gradlew.bat --no-daemon clean jar jarAndroid`
 3) 提交、推送、打 tag（`vX.Y.Z`）触发 GitHub Actions Release
 

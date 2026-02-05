@@ -1,6 +1,6 @@
 # StealthPath 文档（维护者/开发者）
 
-本目录下的 `*_dox.md` 为 StealthPath 仓库级说明文档，统一放在仓库根目录，便于维护与在整合包（BEK-Tools）中同步时查阅。
+本目录下的 `*_dox.md` 为 StealthPath 仓库级说明文档，统一放在仓库根目录，便于维护与在整合包（Neon）中同步时查阅。
 
 ## 1. 这个 Mod 做什么
 

@@ -1,6 +1,6 @@
 # StealthPath 文件说明（files dox）
 
-本文件按“仓库根目录相对路径”列出 StealthPath 的主要文件/目录作用，便于维护与整合包同步（BEK-Tools 的 `tools/update_submods.py` 主要同步 `src/main/java/stealthpath` 与 `src/main/resources/bundles`）。
+本文件按“仓库根目录相对路径”列出 StealthPath 的主要文件/目录作用，便于维护与整合包同步（Neon 的 `tools/update_submods.py` 主要同步 `src/main/java/stealthpath` 与 `src/main/resources/bundles`）。
 
 > 说明范围：以 mod 的可维护代码/资源为主；Gradle wrapper、IDE 配置、构建缓存等不在此详述。
 
@@ -14,7 +14,7 @@
 - `stealthpath_api_dox.md`：接口说明（热键、设置 key、OverlayUI 窗口、主要方法职责）
 - `stealthpath_overlayui_dox.md`：OverlayUI/回退 HUD 机制与可见性控制
 - `stealthpath_arch_dox.md`：核心算法/架构说明（ThreatMap、寻路、自动模式、RTS 下发）
-- `stealthpath_release_dox.md`：发布流程与版本号规则（含与 BEK-Tools 同步建议）
+- `stealthpath_release_dox.md`：发布流程与版本号规则（含与 Neon 同步建议）
 
 ## Java 源码（`src/main/java/stealthpath/`）
 

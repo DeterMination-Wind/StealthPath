@@ -107,7 +107,7 @@
 
 ## 3. 代码接口（Developer-facing）
 
-> 这里的“接口”指模块边界/职责，不建议外部 mod 直接调用 StealthPath 内部方法（StealthPath 不是库）。整合包（BEK-Tools）是通过源码合并而非依赖调用。
+> 这里的“接口”指模块边界/职责，不建议外部 mod 直接调用 StealthPath 内部方法（StealthPath 不是库）。整合包（Neon）是通过源码合并而非依赖调用。
 
 ### 3.1 `StealthPathMod`
 
