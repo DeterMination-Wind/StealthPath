@@ -3,6 +3,8 @@ name: Release (Main Builds)
 on:
   push:
     branches: [ main ]
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -38,14 +40,22 @@ jobs:
         id: vars
         shell: bash
         run: |
-          short_sha="${GITHUB_SHA::7}"
-          echo "tag=main-${GITHUB_RUN_NUMBER}-${short_sha}" >> "$GITHUB_OUTPUT"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "name=Release ${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "allowUpdates=true" >> "$GITHUB_OUTPUT"
+          else
+            short_sha="${GITHUB_SHA::7}"
+            echo "tag=main-${GITHUB_RUN_NUMBER}-${short_sha}" >> "$GITHUB_OUTPUT"
+            echo "name=Main build main-${GITHUB_RUN_NUMBER}-${short_sha}" >> "$GITHUB_OUTPUT"
+            echo "allowUpdates=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Create new release (no overwrite)
         uses: ncipollo/release-action@v1
         with:
           tag: ${{ steps.vars.outputs.tag }}
-          name: Main build ${{ steps.vars.outputs.tag }}
-          allowUpdates: false
+          name: ${{ steps.vars.outputs.name }}
+          allowUpdates: ${{ steps.vars.outputs.allowUpdates }}
           bodyFile: RELEASE_NOTES.md
           artifacts: dist/stealth-path.zip,dist/stealth-path-android.jar

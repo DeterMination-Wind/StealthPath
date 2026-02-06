@@ -118,6 +118,11 @@ tasks.register("d8InputJar", Jar){
     from(sourceSets.main.output)
 }
 
+// Gradle 8+ validation: make the ordering explicit when both tasks are in the graph.
+tasks.named("d8InputJar").configure{
+    mustRunAfter tasks.named("copyZipToRoot")
+}
+
 tasks.register("dexAndroid", Exec){
     group = "build"
     description = "Compiles Java bytecode into classes.dex for Mindustry Android mod loading."
