@@ -9,7 +9,7 @@
 
 偷袭小道是一个纯客户端叠加层模组：根据敌方炮塔/单位的威胁范围，在地图上绘制“更安全 / 受伤更少”的路线预览；并提供自动模式，辅助选中单位集群进行移动与绕行。
 
-当前版本：`5.0.0`
+当前版本：`5.1.0`
 
 ### 功能一览
 
@@ -97,7 +97,7 @@
 
 Stealth Path is a client-side overlay mod that draws “safer / lower-damage” route previews based on enemy turret and unit threat ranges. It also includes auto modes to help selected unit groups move and avoid danger.
 
-Current version: `5.0.0`
+Current version: `5.1.0`
 
 ### Features
 

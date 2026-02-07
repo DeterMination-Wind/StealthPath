@@ -34,6 +34,8 @@ final class GithubUpdateCheck{
     private static final String owner = "DeterMination-Wind";
     private static final String repo = "StealthPath";
     private static final String modName = "stealth-path";
+    private static final String desktopAssetName = "stealth-path.zip";
+    private static final String androidAssetName = "stealth-path-android.jar";
 
     private static final String mirrorPrefix = "https://ghfile.geekertao.top/";
 
@@ -201,7 +203,7 @@ final class GithubUpdateCheck{
                 .row();
         }
 
-        final AssetInfo[] selected = {pickDefaultAsset(rel.assets)};
+        final AssetInfo[] selected = {pickAssetForRelease(rel)};
         final boolean[] useMirror = {Core.settings.getBool(keyUpdateCheckUseMirror, false)};
         final String[] url = {selected[0] == null ? rel.htmlUrl : buildDownloadUrl(selected[0].url, useMirror[0])};
         final arc.scene.ui.TextField[] urlFieldRef = {null};
@@ -243,6 +245,9 @@ final class GithubUpdateCheck{
             if(selected[0] != null){
                 url[0] = buildDownloadUrl(selected[0].url, v);
                 urlField.setText(url[0]);
+            }else{
+                url[0] = buildDownloadUrl(url[0], v);
+                urlField.setText(url[0]);
             }
         }).left().padTop(6f).row();
 
@@ -252,8 +257,8 @@ final class GithubUpdateCheck{
         dialog.buttons.defaults().size(200f, 54f).pad(6f);
         dialog.buttons.button("@sp.update.open", Icon.link, () -> Core.app.openURI(rel.htmlUrl));
         dialog.buttons.button("下载并重启", Icon.download, () -> {
-            if(selected[0] == null){
-                Core.app.openURI(rel.htmlUrl);
+            if(selected[0] == null || url[0] == null || url[0].trim().isEmpty()){
+                if(Vars.ui != null) Vars.ui.showErrorMessage(Core.bundle.get("sp.update.no-asset"));
                 return;
             }
             dialog.hide();
@@ -317,6 +322,14 @@ final class GithubUpdateCheck{
 
     private static void startDownloadAndInstall(Mods.LoadedMod mod, AssetInfo asset, String url){
         if(Vars.ui == null) return;
+        if(asset == null || asset.name == null || asset.name.isEmpty()){
+            Vars.ui.showErrorMessage(Core.bundle.get("sp.update.no-asset"));
+            return;
+        }
+        if(url == null || url.trim().isEmpty()){
+            Vars.ui.showErrorMessage(Core.bundle.get("sp.update.no-url"));
+            return;
+        }
 
         Fi dir = Vars.tmpDirectory.child("mod-update");
         dir.mkdirs();
@@ -332,10 +345,25 @@ final class GithubUpdateCheck{
         final float[] lengthMb = {0f};
         final boolean[] canceled = {false};
 
-        BaseDialog dialog = new BaseDialog("@be.updating");
+        final float[] downloadedMb = {0f};
+        final float[] speedMb = {0f};
+
+        BaseDialog dialog = new BaseDialog("@sp.update.downloading.title");
         dialog.cont.add(new Bar(() -> {
-            if(lengthMb[0] <= 0f) return Core.bundle.get("be.updating");
-            return Strings.autoFixed(progress[0] * lengthMb[0], 2) + "/" + Strings.autoFixed(lengthMb[0], 2) + " MB";
+            if(lengthMb[0] <= 0f){
+                return Core.bundle.format(
+                    "sp.update.downloading.unknown",
+                    Strings.autoFixed(downloadedMb[0], 2),
+                    Strings.autoFixed(speedMb[0], 2)
+                );
+            }
+            return Core.bundle.format(
+                "sp.update.downloading.progress",
+                Strings.autoFixed(progress[0] * 100f, 1),
+                Strings.autoFixed(downloadedMb[0], 2),
+                Strings.autoFixed(lengthMb[0], 2),
+                Strings.autoFixed(speedMb[0], 2)
+            );
         }, () -> Pal.accent, () -> progress[0])).width(400f).height(70f);
         dialog.buttons.button("@cancel", Icon.cancel, () -> {
             canceled[0] = true;
@@ -344,7 +372,7 @@ final class GithubUpdateCheck{
         dialog.setFillParent(false);
         dialog.show();
 
-        Http.get(url)
+        Http.get(url.trim())
             .timeout(30000)
             .header("User-Agent", "Mindustry")
             .error(e -> {
@@ -357,12 +385,14 @@ final class GithubUpdateCheck{
 
                 if(total > 0 && file.exists() && file.length() == total){
                     dialog.hide();
-                    Core.app.post(() -> installAndRestart(mod, file));
+                    Core.app.post(() -> installAndRestart(mod, asset, file));
                     return;
                 }
 
                 int buffer = 1024 * 1024;
                 long read = 0L;
+                long speedCheckTime = System.currentTimeMillis();
+                long speedCheckBytes = 0L;
                 try(InputStream in = res.getResultAsStream(); OutputStream out = file.write(false, buffer)){
                     byte[] buf = new byte[buffer];
                     int r;
@@ -370,6 +400,16 @@ final class GithubUpdateCheck{
                         if(canceled[0]) break;
                         out.write(buf, 0, r);
                         read += r;
+                        downloadedMb[0] = read / 1024f / 1024f;
+
+                        long now = System.currentTimeMillis();
+                        if(now - speedCheckTime >= 350L){
+                            float dt = Math.max(0.001f, (now - speedCheckTime) / 1000f);
+                            speedMb[0] = ((read - speedCheckBytes) / 1024f / 1024f) / dt;
+                            speedCheckTime = now;
+                            speedCheckBytes = read;
+                        }
+
                         if(total > 0){
                             progress[0] = Math.min(1f, read / (float)total);
                         }
@@ -390,19 +430,59 @@ final class GithubUpdateCheck{
 
                 progress[0] = 1f;
                 dialog.hide();
-                Core.app.post(() -> installAndRestart(mod, file));
+                Core.app.post(() -> installAndRestart(mod, asset, file));
             });
     }
 
-    private static void installAndRestart(Mods.LoadedMod mod, Fi file){
+    private static void installAndRestart(Mods.LoadedMod mod, AssetInfo asset, Fi file){
         try{
-            Vars.mods.importMod(file);
+            Fi target = resolveInstallTarget(mod, asset);
+            if(target == null) throw new RuntimeException("Invalid mod file target.");
+
+            target.parent().mkdirs();
+            Fi backup = target.sibling(target.name() + ".bak");
+
+            if(backup.exists()){
+                try{ backup.delete(); }catch(Throwable ignored){}
+            }
+
+            if(target.exists()){
+                try{ target.copyTo(backup); }catch(Throwable ignored){}
+                try{ target.delete(); }catch(Throwable ignored){}
+            }
+
+            file.copyTo(target);
+
+            if(backup.exists()){
+                try{ backup.delete(); }catch(Throwable ignored){}
+            }
+
             try{ file.delete(); }catch(Throwable ignored){}
-            Vars.ui.showInfoToast(mod.meta.displayName + ": 已下载并安装，正在重启...", 4f);
+            Vars.ui.showInfoToast(mod.meta.displayName + ": " + Core.bundle.get("sp.update.installing"), 4f);
             restartApp();
         }catch(Throwable t){
             if(Vars.ui != null) Vars.ui.showException(t);
         }
+    }
+
+    private static Fi resolveInstallTarget(Mods.LoadedMod mod, AssetInfo asset){
+        String fileName = sanitizeAssetName(asset == null ? null : asset.name);
+        if(mod != null && mod.file != null && !mod.file.isDirectory()){
+            String ext = mod.file.extension();
+            if(ext != null && !ext.isEmpty()) return mod.file;
+        }
+        return Vars.modDirectory.child(fileName);
+    }
+
+    private static String sanitizeAssetName(String name){
+        String n = name == null ? "" : name.trim();
+        if(n.isEmpty()){
+            return (OS.isAndroid || Vars.mobile) ? androidAssetName : desktopAssetName;
+        }
+        if(!n.endsWith(".zip") && !n.endsWith(".jar")){
+            return (OS.isAndroid || Vars.mobile) ? androidAssetName : desktopAssetName;
+        }
+        return n;
     }
 
     private static void restartApp(){
@@ -543,6 +623,26 @@ final class GithubUpdateCheck{
         }
 
         return assets.get(0);
+    }
+
+    private static AssetInfo pickAssetForRelease(ReleaseInfo rel){
+        if(rel != null){
+            AssetInfo picked = pickDefaultAsset(rel.assets);
+            if(picked != null) return picked;
+        }
+
+        boolean android = OS.isAndroid || Vars.mobile;
+        String name = android ? androidAssetName : desktopAssetName;
+        String tag = rel == null ? "" : Strings.stripColors(rel.tag);
+
+        String directUrl;
+        if(tag == null || tag.trim().isEmpty()){
+            directUrl = "https://github.com/" + owner + "/" + repo + "/releases/latest/download/" + name;
+        }else{
+            directUrl = "https://github.com/" + owner + "/" + repo + "/releases/download/" + tag.trim() + "/" + name;
+        }
+
+        return new AssetInfo(name, directUrl, -1L, 0);
     }
 
     private static String buildDownloadUrl(String original, boolean mirror){
