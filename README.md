@@ -1,4 +1,10 @@
 # Stealth Path / 偷袭小道 (Mindustry Mod)
+<h1 align="center">
+  <a href="https://github.com/DeterMination-Wind/StealthPath/releases/latest"><img src="https://img.shields.io/github/v/release/DeterMination-Wind/StealthPath?display_name=release&label=Latest%20Release&color=green"></a>
+  <a href="https://github.com/DeterMination-Wind/StealthPath/releases"><img src="https://img.shields.io/github/downloads/DeterMination-Wind/StealthPath/total?label=Downloads&color=blue"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/DeterMination-Wind/StealthPath?label=License"></a>
+  <a href="https://github.com/DeterMination-Wind/StealthPath"><img src="https://img.shields.io/github/stars/DeterMination-Wind/StealthPath?style=flat&label=Star%20this%20mod!&color=yellow"></a>
+</h1>
 
 - [中文](#中文)
 - [English](#english)
