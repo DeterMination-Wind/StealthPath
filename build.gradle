@@ -2,291 +2,165 @@ plugins{
     id "java"
 }
 
-group = "stealthpath"
-version = "5.3.2"
+version = "0.0.0"
+group = "bsp"
+
+sourceSets{
+    main.java.srcDirs = ["src"]
+    test.java.srcDirs = ["test"]
+}
+
+repositories{
+    mavenCentral()
+}
 
 java{
     sourceCompatibility = JavaVersion.VERSION_1_8
     targetCompatibility = JavaVersion.VERSION_1_8
 }
 
-repositories{
-    mavenCentral()
-    maven{ url "https://jitpack.io" }
-}
-
-def mindustryVersion = (findProperty("mindustryVersion") ?: "v154.3").toString()
-
-configurations.configureEach{
-    resolutionStrategy.eachDependency{ details ->
-        // MindustryJitpack can request Arc modules by commit hash, but JitPack hosts tag versions.
-        if(details.requested.group == "com.github.Anuken.Arc" && details.requested.version == "ec5df18e54"){
-            details.useVersion(mindustryVersion)
-            details.because("Use JitPack Arc tag artifacts for stable dependency resolution")
-        }
-    }
-}
-
-dependencies{
-    // Prefer building against a local Mindustry source checkout (as an included subproject).
-    if(rootProject.findProject(":core") != null){
-        compileOnly project(":core")
-    }else{
-        // Standalone build: fetch Mindustry core from JitPack.
-        compileOnly "com.github.Anuken.MindustryJitpack:core:$mindustryVersion"
-    }
-}
-
 tasks.withType(JavaCompile).configureEach{
     options.encoding = "UTF-8"
-    if(JavaVersion.current().isCompatibleWith(JavaVersion.VERSION_1_9)){
-        options.release.set(8)
+    options.release = 8
+}
+
+// Offline dependency wiring against the official Mindustry v7 (build 157)
+// artifacts from the local Gradle cache — the game version this mod targets
+// (minGameVersion 154). Falls back to any explicitly passed jar via -PmindustryJar.
+def gradleCache = new File(gradle.gradleUserHomeDir, "caches/modules-2/files-2.1")
+
+def findCached = { String groupDir, String artifact, String version ->
+    def dir = new File(gradleCache, "${groupDir}/${artifact}/${version}")
+    if(!dir.exists()) return null
+    def out = []
+    dir.eachFileRecurse { f -> if(f.name == "${artifact}-${version}.jar") out << f }
+    return out.isEmpty() ? null : out[0]
+}
+
+def mindustryCoreJar = findCached("com.github.Anuken.Mindustry", "core", "v157")
+def arcCoreJar = findCached("com.github.Anuken.Arc", "arc-core", "4d9760e264") // archash of v157
+def explicitJar = findProperty("mindustryJar")
+
+dependencies{
+    if(explicitJar != null){
+        compileOnly files(explicitJar)
+    }else{
+        compileOnly files(mindustryCoreJar, arcCoreJar)
+    }
+    testImplementation "junit:junit:4.13.2"
+    testRuntimeOnly "org.hamcrest:hamcrest-core:1.3"
+}
+
+tasks.register("verifyClasspath"){
+    doLast{
+        if(explicitJar != null){
+            if(!file(explicitJar).exists()){
+                throw new GradleException("Missing Mindustry jar: ${explicitJar}")
+            }
+            logger.lifecycle("betterStealthPath compiling against explicit jar: {}", explicitJar)
+            return
+        }
+        if(mindustryCoreJar == null || arcCoreJar == null){
+            throw new GradleException(
+                "Missing Mindustry v157 jars under ${gradleCache}. " +
+                "Resolve com.github.Anuken.Mindustry:core:v157 and Arc:arc-core:4d9760e264 once, " +
+                "or pass -PmindustryJar=<path>.")
+        }
+        logger.lifecycle("betterStealthPath compiling against Mindustry v157:")
+        logger.lifecycle("  core: {}", mindustryCoreJar)
+        logger.lifecycle("  arc : {}", arcCoreJar)
+    }
+}
+
+compileJava.dependsOn "verifyClasspath"
+
+// ==== Aggregated (bundled) build contract ====
+// `-Pbundled=true` injects bsp/bundled.properties into the jar; the mod then
+// skips its own settings category and its own update check (the aggregator owns
+// both). Default is standalone mode.
+def bundled = (findProperty("bundled") ?: "false").toString().equalsIgnoreCase("true")
+
+def bundledFlagDir = layout.buildDirectory.dir("bundled-flag")
+
+tasks.register("writeBundledFlag"){
+    inputs.property "bundled", bundled
+    outputs.dir(bundledFlagDir)
+    doLast{
+        def f = new File(bundledFlagDir.get().asFile, "bsp/bundled.properties")
+        f.parentFile.mkdirs()
+        f.text = "bundled=${bundled}\n"
+        logger.lifecycle("betterStealthPath bundled form: {}", bundled)
     }
 }
 
 jar{
-    // A Mindustry Java mod is a zip/jar archive with classes + resources.
-    // Use .zip extension for distribution.
-    archiveFileName = "${project.name}.zip"
-}
+    archiveFileName = "betterStealthPath-dev.jar"
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    dependsOn "writeBundledFlag"
 
-// Keep a copy at the repo root for easy install.
-tasks.register("copyZipToRoot", Copy){
-    // Root contains Gradle locks; disable state tracking to avoid snapshot failures.
-    doNotTrackState("Copies into root directory which may contain unreadable Gradle lock files.")
-    dependsOn tasks.named("jar")
-    from(tasks.named("jar").flatMap{ it.archiveFile })
-    // "root" here means the directory alongside Mindustry-main/Mindustry-master.
-    into(rootDir.parentFile)
-}
-
-// Keep a copy in dist/ for GitHub releases.
-tasks.register("copyZipToDist", Copy){
-    dependsOn tasks.named("jar")
-    mustRunAfter tasks.named("copyZipToRoot")
-    from(tasks.named("jar").flatMap{ it.archiveFile })
-    into(new File(project.projectDir, "dist"))
-    rename{ _ -> "${project.name}.zip" }
-    doNotTrackState("Copying into dist is a convenience step; state tracking is unnecessary here.")
-}
-
-// Keep a copy in workspace root "构建/<mod-name>/" for archiving.
-def buildCopyDir = new File(rootDir.parentFile, "构建/${project.name}")
-
-tasks.register("copyZipToBuildFolder", Copy){
-    dependsOn tasks.named("jar")
-    mustRunAfter tasks.named("copyZipToDist")
-    from(tasks.named("jar").flatMap{ it.archiveFile })
-    into(buildCopyDir)
-    rename{ _ -> "${project.name}-${project.version}.zip" }
-    doFirst{
-        buildCopyDir.mkdirs()
-    }
-    doNotTrackState("Copying into workspace build folder is a convenience step; state tracking is unnecessary here.")
-}
-
-tasks.named("jar").configure{
-    finalizedBy tasks.named("copyZipToRoot")
-    finalizedBy tasks.named("copyZipToDist")
-    finalizedBy tasks.named("copyZipToBuildFolder")
-}
-
-def isWindows = System.getProperty("os.name").toLowerCase(Locale.ROOT).contains("windows")
-
-def findD8 = {
-    def explicit = System.getenv("D8_PATH")
-    if(explicit){
-        def f = new File(explicit)
-        if(f.exists()) return f
-    }
-
-    def sdkRoot = System.getenv("ANDROID_SDK_ROOT") ?: System.getenv("ANDROID_HOME")
-    if(sdkRoot){
-        def buildToolsDir = new File(sdkRoot, "build-tools")
-        if(buildToolsDir.isDirectory()){
-            def toolName = isWindows ? "d8.bat" : "d8"
-            def candidates = (buildToolsDir.listFiles() ?: [])
-                .findAll{ it.isDirectory() }
-                .sort{ a, b -> b.name <=> a.name }
-
-            for(def dir : candidates){
-                def exe = new File(dir, toolName)
-                if(exe.exists()) return exe
-            }
-        }
-    }
-
-    if(isWindows){
-        def workspaceRoot = rootDir.parentFile
-        def matches = (workspaceRoot.listFiles() ?: [])
-            .findAll{ it.isDirectory() && it.name.startsWith("commandlinetools-win-") }
-            .sort{ a, b -> b.name <=> a.name }
-
-        for(def dir : matches){
-            def exe = new File(dir, "cmdline-tools/bin/d8.bat")
-            if(exe.exists()) return exe
-        }
-    }
-
-    return null
-}
-
-def androidDexOutDir = layout.buildDirectory.dir("d8").get().asFile
-
-tasks.register("d8InputJar", Jar){
-    group = "build"
-    description = "Builds a jar used only as input for D8 (no dist side effects)."
-    dependsOn tasks.named("classes")
-    archiveFileName = "${project.name}-d8-input.jar"
-    destinationDirectory = layout.buildDirectory.dir("d8-input")
-    from(sourceSets.main.output)
-}
-
-// Gradle 8+ validation: make the ordering explicit when both tasks are in the graph.
-tasks.named("d8InputJar").configure{
-    mustRunAfter tasks.named("copyZipToRoot")
-}
-
-tasks.register("dexAndroid", Exec){
-    group = "build"
-    description = "Compiles Java bytecode into classes.dex for Mindustry Android mod loading."
-    dependsOn tasks.named("d8InputJar")
-
-    doFirst{
-        def d8 = findD8()
-        if(d8 == null){
-            throw new GradleException("D8 not found. Set ANDROID_SDK_ROOT/ANDROID_HOME or D8_PATH (or keep commandlinetools-win-* in workspace root on Windows).")
-        }
-        delete(androidDexOutDir)
-        androidDexOutDir.mkdirs()
-
-        def programZip = tasks.named("d8InputJar").get().archiveFile.get().asFile
-
-        commandLine d8.absolutePath
-        args "--min-api", "14", "--release", "--output", androidDexOutDir.absolutePath
-        args programZip.absolutePath
-    }
-}
-
-tasks.register("jarAndroid", Jar){
-    group = "build"
-    description = "Packages an Android-compatible mod JAR containing classes.dex."
-    dependsOn tasks.named("dexAndroid")
-
-    archiveFileName = "${project.name}-android.jar"
-    destinationDirectory = layout.buildDirectory.dir("libs")
-
-    from(androidDexOutDir){
-        include "classes.dex"
-    }
-    from(sourceSets.main.output.resourcesDir)
-}
-
-tasks.register("copyAndroidJarToDist", Copy){
-    dependsOn(tasks.named("jarAndroid"))
-    from(tasks.named("jarAndroid").flatMap{ it.archiveFile })
-    into(new File(project.projectDir, "dist"))
-    rename{ _ -> "${project.name}-android.jar" }
-    doNotTrackState("Copying into dist is a convenience step; state tracking is unnecessary here.")
-}
-
-tasks.register("copyAndroidJarToBuildFolder", Copy){
-    dependsOn(tasks.named("jarAndroid"))
-    from(tasks.named("jarAndroid").flatMap{ it.archiveFile })
-    into(buildCopyDir)
-    rename{ _ -> "${project.name}-${project.version}-android.jar" }
-    doFirst{
-        buildCopyDir.mkdirs()
-    }
-    doNotTrackState("Copying into workspace build folder is a convenience step; state tracking is unnecessary here.")
-}
-
-tasks.named("jarAndroid").configure{
-    finalizedBy tasks.named("copyAndroidJarToDist")
-    finalizedBy tasks.named("copyAndroidJarToBuildFolder")
-}
-
-def mergedArchiveBase = project.name
-
-tasks.register("jarMerged", Jar){
-    group = "build"
-    description = "Packages a single jar for both desktop and Android."
-    dependsOn tasks.named("classes")
-    dependsOn tasks.named("dexAndroid")
-    archiveFileName = "${mergedArchiveBase}.jar"
-    destinationDirectory = layout.buildDirectory.dir("libs")
-    from(sourceSets.main.output)
-    from(androidDexOutDir){
-        include "classes.dex"
+    from(bundledFlagDir){
+        include "bsp/bundled.properties"
     }
     from(projectDir){
         include "mod.json"
-        include "mod.hjson"
     }
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    from("assets/"){
+        include "**"
+    }
 }
 
-tasks.register("zipMerged", Zip){
+// The Gradle Test Executor cannot bootstrap on hosts whose user directory is
+// non-ASCII (worker classpath garbling), so JUnit runs in-process via JavaExec.
+tasks.register("selfTest", JavaExec){
+    group = "verification"
+    description = "Runs the JUnit 4 suites in-process; fails the build on any failure."
+    dependsOn testClasses
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = "bsp.selftest.SelfTestRunner"
+}
+
+test.enabled = false
+check.dependsOn "selfTest"
+
+// ==== i18n discipline: en + zh_CN must carry the identical key set ====
+tasks.register("checkBundleSync"){
+    group = "verification"
+    description = "Fails the build when bundle.properties and bundle_zh_CN.properties key sets differ."
+    doLast{
+        def keys = { File f ->
+            def set = new TreeSet<String>()
+            f.eachLine { line ->
+                def t = line.trim()
+                if(t && !t.startsWith("#")){
+                    def i = t.indexOf('=')
+                    if(i > 0) set << t.substring(0, i).trim()
+                }
+            }
+            return set
+        }
+        def en = keys(file("assets/bundles/bundle.properties"))
+        def zh = keys(file("assets/bundles/bundle_zh_CN.properties"))
+        def missingZh = en - zh
+        def missingEn = zh - en
+        if(missingZh || missingEn){
+            throw new GradleException("Bundle key mismatch. Missing in zh_CN: ${missingZh} ; missing in en: ${missingEn}")
+        }
+        logger.lifecycle("Bundle sync OK: {} shared keys (en and zh_CN).", en.size())
+    }
+}
+
+check.dependsOn "checkBundleSync"
+
+def devArtifactDir = new File(rootDir.parentFile, "构建/betterStealthPath")
+
+tasks.register("copyDevJar", Copy){
     group = "build"
-    description = "Packages a single zip for both desktop and Android."
-    dependsOn tasks.named("jarMerged")
-    archiveFileName = "${mergedArchiveBase}.zip"
-    destinationDirectory = layout.buildDirectory.dir("libs")
-    from({ zipTree(tasks.named("jarMerged").get().archiveFile.get().asFile) })
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    description = "Copies the dev jar to the workspace 构建 output folder."
+    dependsOn jar
+    from(jar.archiveFile)
+    into(devArtifactDir)
+    rename { "betterStealthPath-dev.jar" }
+    doNotTrackState("Copies dev artifact into workspace build output folder.")
 }
 
-tasks.register("copyMergedJarToDist", Copy){
-    dependsOn tasks.named("jarMerged")
-    from(tasks.named("jarMerged").flatMap{ it.archiveFile })
-    into(new File(project.projectDir, "dist"))
-    rename{ _ -> "${mergedArchiveBase}.jar" }
-    doNotTrackState("Copying into dist is a convenience step; state tracking is unnecessary here.")
-}
-
-tasks.register("copyMergedZipToDist", Copy){
-    dependsOn tasks.named("zipMerged")
-    from(tasks.named("zipMerged").flatMap{ it.archiveFile })
-    into(new File(project.projectDir, "dist"))
-    rename{ _ -> "${mergedArchiveBase}.zip" }
-    doNotTrackState("Copying into dist is a convenience step; state tracking is unnecessary here.")
-}
-
-tasks.register("copyMergedJarToBuildFolder", Copy){
-    dependsOn tasks.named("jarMerged")
-    from(tasks.named("jarMerged").flatMap{ it.archiveFile })
-    into(buildCopyDir)
-    rename{ _ -> "${mergedArchiveBase}-${project.version}.jar" }
-    doFirst{
-        buildCopyDir.mkdirs()
-    }
-    doNotTrackState("Copying into workspace build folder is a convenience step; state tracking is unnecessary here.")
-}
-
-tasks.register("copyMergedZipToBuildFolder", Copy){
-    dependsOn tasks.named("zipMerged")
-    from(tasks.named("zipMerged").flatMap{ it.archiveFile })
-    into(buildCopyDir)
-    rename{ _ -> "${mergedArchiveBase}-${project.version}.zip" }
-    doFirst{
-        buildCopyDir.mkdirs()
-    }
-    doNotTrackState("Copying into workspace build folder is a convenience step; state tracking is unnecessary here.")
-}
-
-tasks.named("jarMerged").configure{
-    finalizedBy tasks.named("copyMergedJarToDist")
-    finalizedBy tasks.named("copyMergedJarToBuildFolder")
-}
-
-tasks.named("zipMerged").configure{
-    finalizedBy tasks.named("copyMergedZipToDist")
-    finalizedBy tasks.named("copyMergedZipToBuildFolder")
-}
-
-tasks.register("deploy"){
-    group = "build"
-    description = "Builds merged desktop+android jar and zip artifacts."
-    dependsOn tasks.named("jarMerged")
-    dependsOn tasks.named("zipMerged")
-}
+build.dependsOn "copyDevJar"
