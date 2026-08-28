@@ -1,11 +1,11 @@
 {
-  "name": "stealth-path",
-  "displayName": "Stealth Path / 偷袭小道",
-  "author": "DeterMination",
-  "description": "Plan safer assault routes by simulating turret/unit threat fields, then draw low-damage or nearest paths with auto-move support. / 基于炮塔与单位威胁场规划低伤或最近路线，支持自动移动与实时路径叠加。",
-  "version": "5.3.2",
-  "minGameVersion": "154",
+  "name": "betterStealthPath-dev",
+  "displayName": "Stealth Path+ (dev)",
+  "author": "clean-room reimplementation",
+  "description": "Stealth Path+ / 偷袭小道+ : threat-aware route preview and safe-move assistance for attack planning. Local-only reference + native move commands; nothing is modified server-side.\n\nThis is the local dev identity (version 0.0.0).",
+  "version": "0.0.0",
   "hidden": true,
-  "java": true,
-  "main": "stealthpath.StealthPathMod"
+  "minGameVersion": "154",
+  "main": "bsp.BspMod",
+  "java": true
 }

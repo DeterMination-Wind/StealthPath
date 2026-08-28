@@ -1,12 +1,6 @@
 .gradle/
 build/
-bin/
-
-# IDE
+*.log
 .idea/
 *.iml
 .vscode/
-
-# OS
-Thumbs.db
-Desktop.ini

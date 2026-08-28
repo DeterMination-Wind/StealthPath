@@ -1,53 +1,89 @@
-# Stealth Path / 偷袭小道
+# betterStealthPath / 偷袭小道+ (Stealth Path+)
 
-## 中文
+A threat-aware route assistant for Mindustry attack planning — a clean-room
+reimplementation of the "Stealth Path" concept, built strictly from its
+feature specification (`FEATURE.md`) plus public Mindustry modding knowledge.
 
-> 让单位进攻时少走弯路，也少撞进敌方火力。
+**This repository contains no code, documents or decompiled material from the
+original Stealth Path mod.** The only requirement source is `FEATURE.md`.
 
-Stealth Path 是一个 Mindustry 客户端路线辅助模组。它把敌方炮塔和单位形成的威胁转化为直观的路线参考，帮助你在进攻、绕行或撤退时快速判断哪条路更值得走。
+---
 
-它适合需要指挥单位集群、经常处理复杂敌方防线，或希望在行动前先估计风险的玩家。路线只是本地决策参考，不改变单位属性和服务器规则。
+## What it does / 它做什么
 
-当前版本：6.0.4。该功能仍在完善，默认关闭；如果你愿意尝试实验性路线辅助，可以在设置中手动开启。
+Holding one key draws a low-casualty route from your units to a target,
+with an expected-damage estimate; auto modes keep replanning for the selected
+formation and can walk it along the route using the game's **native move
+command channel** (equivalent to you right-clicking your own selected units).
 
-### 安装与使用
+按住一个键,从你的单位到目标画出一条预估受伤更低的路线并给出预计受伤;
+自动模式持续为选中编队重算路线,并可沿路线用**原生移动指挥通道**行进
+(等价于你本人对自己选中单位的右键指挥)。
 
-将 stealth-path.zip 放入 Mindustry 的 mods 目录并启用。进入世界后，在 设置 → 控制 中查看并绑定路线预览与自动移动相关按键；详细显示方式可在 设置 → 模组 → Stealth Path 中调整。
+Highlights / 亮点:
 
-MindustryX 可提供额外的 OverlayUI 窗口；没有 MindustryX 时，核心路线提示仍可使用。
+- Formation-aware threat model: projectile shape (direct / piercing line /
+  splash / continuous beam), multi-target caps, hit falloff, flat armor
+  mitigation, air/ground coverage — the external contract stays "one threat
+  value per tile".
+- `Auto` threat filter: re-inferred from the selected formation on every plan.
+- Liquid & deep-water protection: block-then-relax rounds, survivable-crossing
+  windows with a reserve margin, goal substitution when the target is sealed.
+- Single player-facing "reckless <-> cautious" slider; no algorithm names in
+  settings.
+- English + Simplified Chinese bundles, key-set equality enforced at build time.
+- Update check that only *informs* — opens the release page (directly or via a
+  configurable mirror); never self-installs or restarts.
 
-### 安卓
+## Fairness boundary / 公平性边界
 
-Android 端请使用 Release 中包含 classes.dex 的 stealth-path-android.jar。
+- Everything is a **local, visual reference**: routes and damage numbers are
+  estimates drawn on your screen. Whether to follow them is your decision.
+- The only influence on a game session: native move commands to **your own
+  selected units**, identical to manual right-click commanding. Servers need
+  nothing installed; no unit stats, damage, ranges or server rules are touched;
+  no auto-firing, no attack commands.
+- Command dispatch is throttled (waypoint cap, resend interval, packet
+  interval, formation batching) to stay a polite client.
+- The mod is `hidden` to keep mod lists clean.
 
-### 构建（开发者）
+## Deployment trade-off / 部署形态取舍
 
-~~~powershell
-.\gradlew.bat deploy
-~~~
+**Desktop-only.** This project deliberately ships no Android `classes.dex`:
+every interaction is keyboard/mouse driven, and producing an untestable
+"loads but does nothing" Android package would be dead weight (the classic
+criticism of this mod category). Installing the jar on Android is not
+supported.
 
-## English
+## Install (desktop) / 安装(桌面)
 
-> Help units take a safer-looking route through hostile fire.
+Copy `betterStealthPath-dev.jar` (local dev build) into your Mindustry `mods/`
+folder. Default hotkeys: `X` preview (turrets), `Y` preview (turrets+units),
+`K` cycle target mode, `L` cycle threat filter, `N`/`M` auto modes, `J` risk
+heatmap; rebind in Settings -> Controls. All behavior is opt-in via explicit
+key presses; a first-use toast points at the keybind screen.
 
-Stealth Path is a Mindustry client-side route assistant. It turns turret and unit threat fields into an understandable path reference, helping you choose a better route when attacking, retreating, or moving a group through a complicated defense line.
+## Build / 构建
 
-It is intended for players who command unit groups or want to estimate risk before committing to a move. The route is local guidance; it does not change unit stats or server rules.
+```
+./gradlew build          # compiles, runs the JUnit self-test, checks bundle sync,
+                         # produces build/libs/betterStealthPath-dev.jar and copies it
+                         # to ../构建/betterStealthPath/betterStealthPath-dev.jar
+./gradlew build -Pbundled=true   # aggregated form: no own settings category,
+                                 # no own update check (see docs/release.md)
+```
 
-Current version: 6.0.4. The feature is still being refined and is disabled by default. Enable it manually if you want to try the experimental route assistance.
+Requires the official Mindustry v7 (`v157`) core + arc jars in the local
+Gradle cache (resolved automatically), or `-PmindustryJar=<path>` to point at
+an existing jar. Bytecode target: Java 8. `minGameVersion: 154`.
 
-### Install and use
+## Status
 
-Put stealth-path.zip in Mindustry's mods directory and enable it. Bind the route-preview and auto-move controls under Settings → Controls, then adjust the presentation under Settings → Mods → Stealth Path.
+Experimental — the master switch defaults to on but nothing happens without a
+key press, and the first use shows a one-time guide toast (deliberate,
+consistent with the README, unlike the original's mismatched messaging).
 
-MindustryX can provide additional OverlayUI windows. The core route guidance remains available without MindustryX.
+## License / Statement
 
-### Android
-
-Use stealth-path-android.jar from Releases on Android; it contains classes.dex.
-
-### Build
-
-~~~powershell
-.\gradlew.bat deploy
-~~~
+Clean-room reimplementation. See `AGENTS.md` for the clean-room constraints
+observed during development.
